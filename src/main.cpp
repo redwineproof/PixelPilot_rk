@@ -19,6 +19,7 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <errno.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -248,6 +249,12 @@ void *__FRAME_THREAD__(void *param)
 	return nullptr;
 }
 
+double timespec_to_ms(struct timespec& ts) {
+    return (ts.tv_sec + ts.tv_nsec / 1e9) * 1000;
+}
+
+bool start_stat = false;
+double display_time_ms;
 
 void *__DISPLAY_THREAD__(void *param)
 {
@@ -256,7 +263,12 @@ void *__DISPLAY_THREAD__(void *param)
 	float latency_avg[200];
 	float min_latency = 1844674407370955161; // almost MAX_uint64_t
 	float max_latency = 0;
-    struct timespec fps_start, fps_end;
+    struct timespec fps_start, fps_end, fps_last, first_frame;
+	double mean_frame_time;
+	double current_frame_time;
+	double total_deviation = 0.0;
+	double deviation, max_deviation = 0.0;
+	int frame_nb = 0;
 
 	pthread_setname_np(pthread_self(), "__DISPLAY");
 	clock_gettime(CLOCK_MONOTONIC, &fps_start);
@@ -307,6 +319,8 @@ void *__DISPLAY_THREAD__(void *param)
 		osd_publish_uint_fact("video.decode_and_handover_ms", NULL, 0, decode_and_handover_display_ms);
         
 		clock_gettime(CLOCK_MONOTONIC, &fps_end);
+		display_time_ms = timespec_to_ms(fps_end);
+
 		uint64_t time_us=(fps_end.tv_sec - fps_start.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_start.tv_nsec)/1000ll) % 1000000ll;
 		if (time_us >= osd_vars.refresh_frequency_ms*1000) {
 			float sum = 0;
@@ -327,13 +341,52 @@ void *__DISPLAY_THREAD__(void *param)
 			SPDLOG_DEBUG("decoding decoding latency={:.2f} ms ({:.2f}, {:.2f}), framerate={} fps",
 						  osd_vars.latency_avg/1000.0, osd_vars.latency_max/1000.0,
 						  osd_vars.latency_min/1000.0, osd_vars.current_framerate);
-			
 			fps_start = fps_end;
 			frame_counter = 0;
 			max_latency = 0;
 			min_latency = 1844674407370955161;
+			start_stat = true;
 		}
 		
+		//fprintf(stdout, "Display frame %u.%06d\n", fps_end.tv_sec, fps_end.tv_nsec / 1000);
+		//fprintf(stdout, "Time since last frame %llu\n", (fps_end.tv_sec - fps_last.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_last.tv_nsec)/1000ll) % 1000000ll);
+
+		if (start_stat == true)
+		{
+			frame_nb++;
+			if (frame_nb == 1)
+			{
+				// init computation
+				first_frame = fps_end;
+				
+			}
+			else
+			{
+				// compute frame time
+				current_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(fps_last));
+				mean_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(first_frame)) / frame_nb;
+			}
+
+			// compute mean deviation from frame time
+			if (frame_nb > 60)
+			{
+				deviation = abs(mean_frame_time - current_frame_time);
+				total_deviation += deviation;
+				max_deviation = deviation > max_deviation ? deviation : max_deviation;			
+			}
+
+			if ((frame_nb % 60) == 0)
+			{
+				fprintf(stdout, "Mean frame time: %.2f ms\n", mean_frame_time);
+				fprintf(stdout, "Mean deviation:  %.2f ms\n", total_deviation / 60);
+				fprintf(stdout, "Max deviation:   %.2f ms\n", max_deviation);
+				max_deviation = 0;
+				total_deviation = 0;
+			}
+
+			fps_last = fps_end;
+		}
+
 		//struct timespec rtime = frame_stats[output_list->video_poc];
 		latency_avg[frame_counter] = decode_and_handover_display_ms;
 		//printf("decoding current_latency=%.2f ms\n",  latency_avg[frame_counter]/1000.0);
@@ -341,6 +394,39 @@ void *__DISPLAY_THREAD__(void *param)
 	}
 end:	
 	spdlog::info("Display thread done.");
+	return nullptr;
+}
+
+
+void *__VSYNC_THREAD__(void *param)
+{
+	struct timespec time_current_vsync;
+	double time_current_vsync_ms = 0.0;
+	double time_last_vsync_ms = 0.0;
+	_drmVBlank blank;
+	int rc;
+
+	pthread_setname_np(pthread_self(), "__VSYNC");
+	while (!frm_eos) {
+		blank.request.type = DRM_VBLANK_RELATIVE;
+		blank.request.sequence = 1;
+		if (rc = drmWaitVBlank(drm_fd, &blank)) {
+			//fprintf(stderr, "drmWaitVBlank %i %i\n", rc, errno);
+			//spdlog::info("Vsync thread done.");
+			//return nullptr;
+		}
+		else
+		{
+			clock_gettime(CLOCK_MONOTONIC, &time_current_vsync);
+			time_current_vsync_ms = timespec_to_ms(time_current_vsync);
+			if (time_last_vsync_ms != 0.0)
+			{
+				fprintf(stdout, "Display to Vsync latency: %.2f ms\n", time_current_vsync_ms - display_time_ms);
+			}
+			time_last_vsync_ms = time_current_vsync_ms;
+		}
+	}
+	spdlog::info("Vsync thread done.");
 	return nullptr;
 }
 
@@ -772,7 +858,7 @@ int main(int argc, char **argv)
 	ret = pthread_cond_init(&video_cond, NULL);
 	assert(!ret);
 
-	pthread_t tid_frame, tid_display, tid_osd, tid_mavlink, tid_dvr;
+	pthread_t tid_frame, tid_display, tid_vsync, tid_osd, tid_mavlink, tid_dvr;
 	if (dvr_template != NULL) {
 		dvr_thread_params args;
 		args.filename_template = dvr_template;
@@ -790,6 +876,8 @@ int main(int argc, char **argv)
 	ret = pthread_create(&tid_frame, NULL, __FRAME_THREAD__, NULL);
 	assert(!ret);
 	ret = pthread_create(&tid_display, NULL, __DISPLAY_THREAD__, NULL);
+	assert(!ret);
+	ret = pthread_create(&tid_vsync, NULL, __VSYNC_THREAD__, NULL);
 	assert(!ret);
 	if (enable_osd) {
 		nlohmann::json osd_config;
