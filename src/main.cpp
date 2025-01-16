@@ -89,6 +89,19 @@ bool osd_custom_message = false;
 VideoCodec codec = VideoCodec::H265;
 Dvr *dvr = NULL;
 
+
+typedef struct {
+	bool start;
+	double gst_time_ms[MAX_FRAMES];
+	double display_time_ms[MAX_FRAMES];
+	long frame_size[MAX_FRAMES];
+	int gst_frame_count;
+	int display_frame_count;
+} t_latency_stats;
+
+t_latency_stats stats;
+
+
 void init_buffer(MppFrame frame) {
 	output_list->video_frm_width = mpp_frame_get_width(frame);
 	output_list->video_frm_height = mpp_frame_get_height(frame);
@@ -144,6 +157,7 @@ void init_buffer(MppFrame frame) {
 		info.type = MPP_BUFFER_TYPE_DRM;
 		info.size = dmcd.width*dmcd.height;
 		info.fd = dph.fd;
+		info.index = i;
 		ret = mpp_buffer_commit(mpi.frm_grp, &info);
 		assert(!ret);
 		mpi.frame_to_drm[i].prime_fd = info.fd; // dups fd						
@@ -178,7 +192,16 @@ void init_buffer(MppFrame frame) {
 	if (dvr != NULL){
 		dvr->set_video_params(output_list->video_frm_width, output_list->video_frm_height, codec);
 	}
+	// stats setup 
+	stats.start = false;
+	stats.gst_frame_count = 0;
+	stats.display_frame_count = 0;
 }
+
+double timespec_to_ms(struct timespec& ts) {
+    return (ts.tv_sec + ts.tv_nsec / 1e9) * 1000;
+}
+
 
 // __FRAME_THREAD__
 //
@@ -215,10 +238,10 @@ void *__FRAME_THREAD__(void *param)
 				if (buffer) {
 					output_list->video_poc = mpp_frame_get_poc(frame);
 					uint64_t feed_data_ts =  mpp_frame_get_pts(frame);
-
 					MppBufferInfo info;
 					ret = mpp_buffer_info_get(buffer, &info);
 					assert(!ret);
+
 					for (i=0; i<MAX_FRAMES; i++) {
 						if (mpi.frame_to_drm[i].prime_fd == info.fd) break;
 					}
@@ -249,12 +272,6 @@ void *__FRAME_THREAD__(void *param)
 	return nullptr;
 }
 
-double timespec_to_ms(struct timespec& ts) {
-    return (ts.tv_sec + ts.tv_nsec / 1e9) * 1000;
-}
-
-bool start_stat = false;
-double display_time_ms;
 
 void *__DISPLAY_THREAD__(void *param)
 {
@@ -268,7 +285,6 @@ void *__DISPLAY_THREAD__(void *param)
 	double current_frame_time;
 	double total_deviation = 0.0;
 	double deviation, max_deviation = 0.0;
-	int frame_nb = 0;
 
 	pthread_setname_np(pthread_self(), "__DISPLAY");
 	clock_gettime(CLOCK_MONOTONIC, &fps_start);
@@ -319,7 +335,6 @@ void *__DISPLAY_THREAD__(void *param)
 		osd_publish_uint_fact("video.decode_and_handover_ms", NULL, 0, decode_and_handover_display_ms);
         
 		clock_gettime(CLOCK_MONOTONIC, &fps_end);
-		display_time_ms = timespec_to_ms(fps_end);
 
 		uint64_t time_us=(fps_end.tv_sec - fps_start.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_start.tv_nsec)/1000ll) % 1000000ll;
 		if (time_us >= osd_vars.refresh_frequency_ms*1000) {
@@ -345,16 +360,21 @@ void *__DISPLAY_THREAD__(void *param)
 			frame_counter = 0;
 			max_latency = 0;
 			min_latency = 1844674407370955161;
-			start_stat = true;
 		}
 		
 		//fprintf(stdout, "Display frame %u.%06d\n", fps_end.tv_sec, fps_end.tv_nsec / 1000);
 		//fprintf(stdout, "Time since last frame %llu\n", (fps_end.tv_sec - fps_last.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_last.tv_nsec)/1000ll) % 1000000ll);
 
-		if (start_stat == true)
+		if (stats.start == true)
 		{
-			frame_nb++;
-			if (frame_nb == 1)
+			stats.display_time_ms[stats.display_frame_count % MAX_FRAMES] = timespec_to_ms(fps_end);
+			/*fprintf(stdout, "stats.display_frame_count : %i, display_time_ms = %.1f ms\n", 
+				stats.display_frame_count,
+				stats.display_time_ms[stats.display_frame_count % MAX_FRAMES]);*/
+			stats.display_frame_count++;
+
+#if 1
+			if (stats.display_frame_count == 1)
 			{
 				// init computation
 				first_frame = fps_end;
@@ -364,18 +384,20 @@ void *__DISPLAY_THREAD__(void *param)
 			{
 				// compute frame time
 				current_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(fps_last));
-				mean_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(first_frame)) / frame_nb;
+				mean_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(first_frame)) / stats.display_frame_count;
 			}
+			
+			//fprintf(stdout, "frame time: %.2f ms\n", current_frame_time);
 
 			// compute mean deviation from frame time
-			if (frame_nb > 60)
+			if (stats.display_frame_count > 60)
 			{
 				deviation = abs(mean_frame_time - current_frame_time);
 				total_deviation += deviation;
 				max_deviation = deviation > max_deviation ? deviation : max_deviation;			
 			}
 
-			if ((frame_nb % 60) == 0)
+			if ((stats.display_frame_count % 60) == 0)
 			{
 				fprintf(stdout, "Mean frame time: %.2f ms\n", mean_frame_time);
 				fprintf(stdout, "Mean deviation:  %.2f ms\n", total_deviation / 60);
@@ -385,6 +407,7 @@ void *__DISPLAY_THREAD__(void *param)
 			}
 
 			fps_last = fps_end;
+#endif
 		}
 
 		//struct timespec rtime = frame_stats[output_list->video_poc];
@@ -421,7 +444,19 @@ void *__VSYNC_THREAD__(void *param)
 			time_current_vsync_ms = timespec_to_ms(time_current_vsync);
 			if (time_last_vsync_ms != 0.0)
 			{
-				fprintf(stdout, "Display to Vsync latency: %.2f ms\n", time_current_vsync_ms - display_time_ms);
+				int display_frame_count = stats.display_frame_count - 1;
+				double gst_time_ms = stats.gst_time_ms[display_frame_count % MAX_FRAMES];
+				double display_time_ms = stats.display_time_ms[display_frame_count % MAX_FRAMES];
+				int size = stats.frame_size[display_frame_count % MAX_FRAMES];
+				
+				fprintf(stdout, "Frame: %i, Latency G->D: %.1f ms, D->V: %.1f ms, size: %i kb\n",
+								 display_frame_count, 
+								 display_time_ms - gst_time_ms,
+								 time_current_vsync_ms - display_time_ms,
+								 size); 
+				/*fprintf(stdout,"display_frame_count: %i gst: %.1f, display %.1f, vsync %.1f, size %i\n",
+						display_frame_count, gst_time_ms, display_time_ms, time_current_vsync_ms, size);*/
+				
 			}
 			time_last_vsync_ms = time_current_vsync_ms;
 		}
@@ -485,12 +520,34 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
     auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
         // Let the gst pull thread run at quite high priority
         static bool first= false;
+		static int frame_nb = 0;
+		struct timespec gst_end;
         if(first){
             SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
             first= false;
         }
 		bytes_received += frame->size();
 		uint64_t now = get_time_ms();
+
+		// log stats, wait at least 100 frames for decoding pipeline to be stable
+		// take only video frames (size > 1024)
+		if ((frame->size() > 1024)&&(frame_nb > 100))
+		{
+			stats.start = true;
+			clock_gettime(CLOCK_MONOTONIC, &gst_end);
+			stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] = timespec_to_ms(gst_end);
+			stats.frame_size[stats.gst_frame_count % MAX_FRAMES] = frame->size();
+			/*fprintf(stdout, "stats.gst_frame_count : %i, gst_time_ms = %.1f ms, size: %i kb\n", 
+							stats.gst_frame_count,
+							stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES],
+							stats.frame_size[stats.gst_frame_count % MAX_FRAMES]);*/
+			fprintf(stdout, "Received gstreamer frame %i, time since last frame %.1f ms\n",
+							stats.gst_frame_count,
+							stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] - stats.gst_time_ms[(stats.gst_frame_count - 1) % MAX_FRAMES]);
+			stats.gst_frame_count++;
+		}
+		frame_nb++;
+
 		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
 		if ((now-period_start) >= 1000) {
 			period_start = now;
