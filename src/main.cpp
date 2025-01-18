@@ -373,7 +373,7 @@ void *__DISPLAY_THREAD__(void *param)
 				stats.display_time_ms[stats.display_frame_count % MAX_FRAMES]);*/
 			stats.display_frame_count++;
 
-#if 1
+#if 0
 			if (stats.display_frame_count == 1)
 			{
 				// init computation
@@ -445,14 +445,17 @@ void *__VSYNC_THREAD__(void *param)
 			if (time_last_vsync_ms != 0.0)
 			{
 				int display_frame_count = stats.display_frame_count - 1;
+				double gst_before_time_ms = stats.gst_time_ms[(display_frame_count - 1) % MAX_FRAMES];
 				double gst_time_ms = stats.gst_time_ms[display_frame_count % MAX_FRAMES];
 				double display_time_ms = stats.display_time_ms[display_frame_count % MAX_FRAMES];
 				int size = stats.frame_size[display_frame_count % MAX_FRAMES];
 				
-				fprintf(stdout, "Frame: %i, Latency G->D: %.1f ms, D->V: %.1f ms, size: %i kb\n",
+				fprintf(stdout, "Frame: %i, Latency G-1->G: %.1f ms, Latency G->D: %.1f ms, D->V: %.1f ms, TOTAL G->V: %.1f ms, size: %i kb\n",
 								 display_frame_count, 
+								 gst_time_ms - gst_before_time_ms,
 								 display_time_ms - gst_time_ms,
 								 time_current_vsync_ms - display_time_ms,
+								 time_current_vsync_ms - gst_time_ms,
 								 size); 
 				/*fprintf(stdout,"display_frame_count: %i gst: %.1f, display %.1f, vsync %.1f, size %i\n",
 						display_frame_count, gst_time_ms, display_time_ms, time_current_vsync_ms, size);*/
@@ -537,13 +540,9 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
 			clock_gettime(CLOCK_MONOTONIC, &gst_end);
 			stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] = timespec_to_ms(gst_end);
 			stats.frame_size[stats.gst_frame_count % MAX_FRAMES] = frame->size();
-			/*fprintf(stdout, "stats.gst_frame_count : %i, gst_time_ms = %.1f ms, size: %i kb\n", 
+			/*fprintf(stdout, "Received gstreamer frame %i, time since last frame %.1f ms\n",
 							stats.gst_frame_count,
-							stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES],
-							stats.frame_size[stats.gst_frame_count % MAX_FRAMES]);*/
-			fprintf(stdout, "Received gstreamer frame %i, time since last frame %.1f ms\n",
-							stats.gst_frame_count,
-							stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] - stats.gst_time_ms[(stats.gst_frame_count - 1) % MAX_FRAMES]);
+							stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] - stats.gst_time_ms[(stats.gst_frame_count - 1) % MAX_FRAMES]);*/
 			stats.gst_frame_count++;
 		}
 		frame_nb++;
