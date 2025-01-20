@@ -426,6 +426,18 @@ void *__VSYNC_THREAD__(void *param)
 	struct timespec time_current_vsync;
 	double time_current_vsync_ms = 0.0;
 	double time_last_vsync_ms = 0.0;
+	double gst_max_latency = 0.0;
+	double gst_sum_max_latency = 0.0;
+	int gst_total_stats_number = 1;
+	int last_display_frame_count = 0;
+	int gst_max_latency_size = 0;
+	int gst_max_latency_frame_count = 0;
+	int gst_mean_size = 0;
+	int stats_frame_nb = 0;
+	double gst_mean_jitter = 0.0;
+	double gst_mean_period = 0.0;
+	double gst_last_period = 16.6;
+
 	_drmVBlank blank;
 	int rc;
 
@@ -448,17 +460,57 @@ void *__VSYNC_THREAD__(void *param)
 				double gst_before_time_ms = stats.gst_time_ms[(display_frame_count - 1) % MAX_FRAMES];
 				double gst_time_ms = stats.gst_time_ms[display_frame_count % MAX_FRAMES];
 				double display_time_ms = stats.display_time_ms[display_frame_count % MAX_FRAMES];
+				double gst_latency_ms = gst_time_ms - gst_before_time_ms;
 				int size = stats.frame_size[display_frame_count % MAX_FRAMES];
-				
+
+								
 				fprintf(stdout, "Frame: %i, Latency G-1->G: %.1f ms, Latency G->D: %.1f ms, D->V: %.1f ms, TOTAL G->V: %.1f ms, size: %i kb\n",
 								 display_frame_count, 
-								 gst_time_ms - gst_before_time_ms,
+								 gst_latency_ms,
 								 display_time_ms - gst_time_ms,
 								 time_current_vsync_ms - display_time_ms,
 								 time_current_vsync_ms - gst_time_ms,
-								 size); 
-				/*fprintf(stdout,"display_frame_count: %i gst: %.1f, display %.1f, vsync %.1f, size %i\n",
-						display_frame_count, gst_time_ms, display_time_ms, time_current_vsync_ms, size);*/
+								 size);
+				if ((display_frame_count > 0)&&(last_display_frame_count != display_frame_count))
+				{
+					if (gst_latency_ms > gst_max_latency)
+					{
+						gst_max_latency = gst_latency_ms;
+						gst_max_latency_size = size;
+						gst_max_latency_frame_count = display_frame_count;
+					}
+					gst_mean_size += size;
+					gst_mean_period += gst_latency_ms; 
+					gst_mean_jitter += abs(gst_latency_ms - gst_last_period);
+					stats_frame_nb++;
+					if (stats_frame_nb >= 120)
+					{
+						gst_sum_max_latency += gst_max_latency;
+						gst_mean_size /= stats_frame_nb;
+						gst_mean_period /= stats_frame_nb;
+						gst_mean_jitter /= stats_frame_nb;
+						fprintf(stdout, "Max gst latency on the last %i frames: %.1f ms on frame %i with size %i kb, Mean max gst latency: %.1f ms\n",
+									stats_frame_nb,
+									gst_max_latency,
+									gst_max_latency_frame_count,
+									gst_max_latency_size,
+									gst_sum_max_latency / gst_total_stats_number);
+						fprintf(stdout, "Mean gst jitter on the last %i frames: %.1f ms, mean period %.1f ms, mean size %i kb\n",
+									stats_frame_nb,
+									gst_mean_jitter,
+									gst_mean_period,
+									gst_mean_size);
+						gst_total_stats_number++;
+						gst_max_latency = 0.0;
+						gst_max_latency_size = 0;
+						gst_mean_size = 0;
+						gst_mean_jitter = 0.0;
+						gst_last_period = gst_mean_period;
+						gst_mean_period = 0.0; 
+						stats_frame_nb = 0;
+					}
+				}
+				last_display_frame_count = display_frame_count;
 				
 			}
 			time_last_vsync_ms = time_current_vsync_ms;
