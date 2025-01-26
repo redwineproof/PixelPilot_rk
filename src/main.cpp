@@ -452,6 +452,7 @@ void *__VSYNC_THREAD__(void *param)
 		}
 		else
 		{
+			#if 1
 			clock_gettime(CLOCK_MONOTONIC, &time_current_vsync);
 			time_current_vsync_ms = timespec_to_ms(time_current_vsync);
 			if (time_last_vsync_ms != 0.0)
@@ -463,14 +464,14 @@ void *__VSYNC_THREAD__(void *param)
 				double gst_latency_ms = gst_time_ms - gst_before_time_ms;
 				int size = stats.frame_size[display_frame_count % MAX_FRAMES];
 
-								
+				/*				
 				fprintf(stdout, "Frame: %i, Latency G-1->G: %.1f ms, Latency G->D: %.1f ms, D->V: %.1f ms, TOTAL G->V: %.1f ms, size: %i kb\n",
 								 display_frame_count, 
 								 gst_latency_ms,
 								 display_time_ms - gst_time_ms,
 								 time_current_vsync_ms - display_time_ms,
 								 time_current_vsync_ms - gst_time_ms,
-								 size);
+								 size);*/
 				if ((display_frame_count > 0)&&(last_display_frame_count != display_frame_count))
 				{
 					if (gst_latency_ms > gst_max_latency)
@@ -514,6 +515,7 @@ void *__VSYNC_THREAD__(void *param)
 				
 			}
 			time_last_vsync_ms = time_current_vsync_ms;
+			#endif
 		}
 	}
 	spdlog::info("Vsync thread done.");
@@ -545,10 +547,17 @@ void sigusr1_handler(int signum) {
 
 int decoder_stalled_count=0;
 bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len){
-    mpp_packet_set_data(packet, data_p);
+    
+	/*
+	fprintf(stdout, "frame decoder hdr1: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[0], ((uint8_t*) data_p)[1], ((uint8_t*) data_p)[2], ((uint8_t*) data_p)[3], ((uint8_t*) data_p)[4], ((uint8_t*) data_p)[5], ((uint8_t*) data_p)[6], ((uint8_t*) data_p)[7]);
+	fprintf(stdout, "frame decoder hdr2: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[8], ((uint8_t*) data_p)[9], ((uint8_t*) data_p)[10], ((uint8_t*) data_p)[11], ((uint8_t*) data_p)[12], ((uint8_t*) data_p)[13], ((uint8_t*) data_p)[14], ((uint8_t*) data_p)[15]);
+	fprintf(stdout, "frame decoder hdr3: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[16], ((uint8_t*) data_p)[17], ((uint8_t*) data_p)[18], ((uint8_t*) data_p)[19], ((uint8_t*) data_p)[20], ((uint8_t*) data_p)[21], ((uint8_t*) data_p)[22], ((uint8_t*) data_p)[23]);
+	*/
+	mpp_packet_set_data(packet, data_p);
     mpp_packet_set_size(packet, data_len);
     mpp_packet_set_pos(packet, data_p);
     mpp_packet_set_length(packet, data_len);
+	// TODO : voir comment utiliser le timestamp RTP dans ce cas
     mpp_packet_set_pts(packet,(RK_S64) get_time_ms());
     // Feed the data to mpp until either timeout (in which case the decoder might have stalled)
     // or success
@@ -567,64 +576,89 @@ bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len){
     return true;
 }
 
-uint64_t first_frame_ms=0;
-void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoCodec& codec){
-    GstRtpReceiver receiver(gst_udp_port, codec);
-	long long bytes_received = 0; 
-	uint64_t period_start=0;
-    auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
-        // Let the gst pull thread run at quite high priority
-        static bool first= false;
-		static int frame_nb = 0;
-		struct timespec gst_end;
-        if(first){
-            SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
-            first= false;
-        }
-		bytes_received += frame->size();
-		uint64_t now = get_time_ms();
-
-		// log stats, wait at least 100 frames for decoding pipeline to be stable
-		// take only video frames (size > 1024)
-		if ((frame->size() > 1024)&&(frame_nb > 100))
-		{
-			stats.start = true;
-			clock_gettime(CLOCK_MONOTONIC, &gst_end);
-			stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] = timespec_to_ms(gst_end);
-			stats.frame_size[stats.gst_frame_count % MAX_FRAMES] = frame->size();
-			/*fprintf(stdout, "Received gstreamer frame %i, time since last frame %.1f ms\n",
-							stats.gst_frame_count,
-							stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] - stats.gst_time_ms[(stats.gst_frame_count - 1) % MAX_FRAMES]);*/
-			stats.gst_frame_count++;
-		}
-		frame_nb++;
-
-		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
-		if ((now-period_start) >= 1000) {
-			period_start = now;
-			osd_vars.bw_curr = (osd_vars.bw_curr + 1) % 10;
-			osd_vars.bw_stats[osd_vars.bw_curr] = bytes_received ;
-			bytes_received = 0;
-		}
-        feed_packet_to_decoder(packet,frame->data(),frame->size());
-        if (dvr_enabled && dvr != NULL) {
-			dvr->frame(frame);
-        }
-    };
-    receiver.start_receiving(cb);
-    while (!signal_flag){
-        sleep(10);
-    }
-    receiver.stop_receiving();
+void set_eos_to_decoder(MppPacket *packet)
+{
     spdlog::info("Feeding eos");
     mpp_packet_set_eos(packet);
-    //mpp_packet_set_pos(packet, nal_buffer);
     mpp_packet_set_length(packet, 0);
-    int ret=0;
+    int ret = 0;
     while (MPP_OK != (ret = mpi.mpi->decode_put_packet(mpi.ctx, packet))) {
         usleep(10000);
     }
-};
+}
+
+
+#include "rtp_h26x.h"
+
+// max 1MB frame size
+#define MAX_NALU_SIZE 1024 * 1024
+uint8_t g_nalu[MAX_NALU_SIZE];
+
+#define MAX_FRAME_SIZE MAX_NALU_SIZE
+uint8_t g_frame[MAX_FRAME_SIZE];
+
+void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
+
+	uint8_t * buffer = (uint8_t *)malloc(MAX_RTP_PACKET_SIZE);
+	int nalu_size = 0;
+	int frame_nb = 0;
+	struct timespec gst_end;
+    long long bytes_received = 0; 
+    uint64_t period_start=0;
+
+	bool ish265 = false;
+	if (codec == VideoCodec::H265) {
+		ish265 = true;
+	}
+
+	// init rtp udp port
+	rtp_h26x_init(port);
+
+	// loop until signal_flag is set
+	while (!signal_flag) {
+		int size = rtp_pkt_rcv(buffer);
+		if (size > 0)
+		{
+			bool end_nalu = rtp_h26x_read_buffer(buffer, size, g_nalu, &nalu_size, ish265);
+			if (end_nalu)
+			{
+				clock_gettime(CLOCK_MONOTONIC, &gst_end);
+
+				feed_packet_to_decoder(packet, g_nalu, nalu_size);
+
+				// log stats, wait at least 100 frames for decoding pipeline to be stable
+				// take only video frames (size > 1024)
+				if ((nalu_size > 1024)&&(frame_nb > 100))
+				{
+					stats.start = true;
+					
+					stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] = timespec_to_ms(gst_end);
+					stats.frame_size[stats.gst_frame_count % MAX_FRAMES] = nalu_size;
+					/*fprintf(stdout, "Received gstreamer frame %i, time since last frame %.1f ms\n",
+									stats.gst_frame_count,
+									stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] - stats.gst_time_ms[(stats.gst_frame_count - 1) % MAX_FRAMES]);*/
+					stats.gst_frame_count++;
+				}
+				frame_nb++;
+
+				bytes_received += nalu_size;
+				uint64_t now = get_time_ms();
+				osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, nalu_size);
+				if ((now-period_start) >= 1000) {
+					period_start = now;
+					osd_vars.bw_curr = (osd_vars.bw_curr + 1) % 10;
+					osd_vars.bw_stats[osd_vars.bw_curr] = bytes_received ;
+					bytes_received = 0;
+				}
+
+				nalu_size = 0; // TODO: check if this is needed
+			}
+		}
+	}
+
+	set_eos_to_decoder(packet);
+	rtp_h26x_deinit();
+}
 
 void set_control_verbose(MppApi * mpi,  MppCtx ctx,MpiCmd control,RK_U32 enable){
     RK_U32 res = mpi->control(ctx, control, &enable);
@@ -1008,7 +1042,7 @@ int main(int argc, char **argv)
 	}
 
 	////////////////////////////////////////////// MAIN LOOP
-    read_gstreamerpipe_stream((void**)packet, listen_port, codec);
+	read_stream((void**)packet, listen_port, codec);
 
 	////////////////////////////////////////////// MPI CLEANUP
 
