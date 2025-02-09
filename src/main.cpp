@@ -40,7 +40,6 @@ extern "C" {
 #include "main.h"
 #include "drm.h"
 #include "rtp.h"
-
 #include "mavlink/common/mavlink.h"
 #include "mavlink.h"
 }
@@ -48,6 +47,7 @@ extern "C" {
 #include "osd.h"
 #include "osd.hpp"
 #include "dvr.h"
+#include "gstrtpreceiver.h"
 #include "scheduling_helper.hpp"
 #include "time_util.h"
 #include "pixelpilot_config.h"
@@ -515,6 +515,51 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 	rtp_h26x_deinit();
 }
 
+
+uint64_t first_frame_ms=0;
+void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoCodec& codec){
+    GstRtpReceiver receiver(gst_udp_port, codec);
+	long long bytes_received = 0; 
+	uint64_t period_start=0;
+    auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
+        // Let the gst pull thread run at quite high priority
+        static bool first= false;
+		static int frame_nb = 0;
+		struct timespec gst_end;
+        if(first){
+            SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
+            first= false;
+        }
+		bytes_received += frame->size();
+		uint64_t now = get_time_ms();
+
+		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
+		if ((now-period_start) >= 1000) {
+			period_start = now;
+			osd_vars.bw_curr = (osd_vars.bw_curr + 1) % 10;
+			osd_vars.bw_stats[osd_vars.bw_curr] = bytes_received ;
+			bytes_received = 0;
+		}
+        feed_packet_to_decoder(packet,frame->data(),frame->size(), now);
+        if (dvr_enabled && dvr != NULL) {
+			dvr->frame(frame);
+        }
+    };
+    receiver.start_receiving(cb);
+    while (!signal_flag){
+        sleep(10);
+    }
+    receiver.stop_receiving();
+    spdlog::info("Feeding eos");
+    mpp_packet_set_eos(packet);
+    //mpp_packet_set_pos(packet, nal_buffer);
+    mpp_packet_set_length(packet, 0);
+    int ret=0;
+    while (MPP_OK != (ret = mpi.mpi->decode_put_packet(mpi.ctx, packet))) {
+        usleep(10000);
+    }
+};
+
 void set_control_verbose(MppApi * mpi,  MppCtx ctx,MpiCmd control,RK_U32 enable){
     RK_U32 res = mpi->control(ctx, control, &enable);
     if(res){
@@ -897,8 +942,9 @@ int main(int argc, char **argv)
 	}
 
 	////////////////////////////////////////////// MAIN LOOP
-	read_stream((void**)packet, listen_port, codec);
-
+	//read_stream((void**)packet, listen_port, codec);
+	read_gstreamerpipe_stream((void**)packet, listen_port, codec);
+	
 	////////////////////////////////////////////// MPI CLEANUP
 
 	ret = pthread_join(tid_frame, NULL);

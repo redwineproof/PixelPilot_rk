@@ -8,25 +8,12 @@
 #include <mutex>
 #include <condition_variable>
 
+#include "gstrtpreceiver.h"
+
 struct MP4E_mux_tag;
 struct mp4_h26x_writer_tag;
 
 
-enum class VideoCodec {
-    UNKNOWN=0,
-    H264,
-    H265
-};
-
-static VideoCodec video_codec(const char * str) {
-    if (!strcmp(str, "h264")) {
-        return VideoCodec::H264;
-    }
-    if (!strcmp(str, "h265")) {
-        return VideoCodec::H265;
-    }
-    return VideoCodec::UNKNOWN;
-}
 
 struct video_params {
     uint32_t video_frm_width;

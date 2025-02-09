@@ -22,6 +22,8 @@ set(SOURCE_FILES
         src/main.cpp
         src/main.h
         src/scheduling_helper.hpp
+        src/gstrtpreceiver.cpp
+        src/gstrtpreceiver.h
         src/rtp_h26x.c)
 file(GLOB ICONS src/icons/*.png)
 file(GLOB OSD_CONFIGS *_osd.json)
@@ -36,6 +38,16 @@ find_package(nlohmann_json 3 REQUIRED)
 
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 target_link_libraries(${PROJECT_NAME} rockchip_mpp pthread drm m cairo spdlog::spdlog nlohmann_json::nlohmann_json)
+
+# Embed gstreamer
+find_package(PkgConfig REQUIRED)
+pkg_search_module(GST REQUIRED
+        gstreamer-1.0>=1.4
+        gstreamer-app-1.0>=1.4
+)
+pkg_search_module(gstreamer REQUIRED IMPORTED_TARGET gstreamer-1.0>=1.4)
+pkg_search_module(gstreamer-app REQUIRED IMPORTED_TARGET gstreamer-app-1.0>=1.4)
+target_link_libraries(${PROJECT_NAME} -Wl,--copy-dt-needed-entries PkgConfig::gstreamer PkgConfig::gstreamer-app  -lavformat)
 
 # Set default build type to Debug if not specified
 if(NOT CMAKE_BUILD_TYPE)
