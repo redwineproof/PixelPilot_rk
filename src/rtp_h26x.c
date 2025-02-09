@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "rtp_h26x.h"
+#include "time_util.h"
 
 static int g_sockfd;
 static int g_cliaddr;
@@ -89,7 +90,7 @@ void _h26x_payload_reset(int *nalu_size)
 
 
 
-bool _h265_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu, int *nalu_size)
+bool _h265_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu, int *nalu_size, uint64_t *pts)
 {
     bool end_nalu = false;
     // get nalu type
@@ -144,6 +145,8 @@ bool _h265_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu
         u_int8_t fu_type = fu_header & 0x3F;
         if (fu_start)
         {
+            *pts = get_time_ms();
+            //fprintf(stdout, "pts %i ms\n", *pts);
             // start of fragment
             frag_nalu_started = true;
             nalu[0] = 0;
@@ -182,6 +185,8 @@ bool _h265_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu
     }
     else
     {
+        *pts = get_time_ms();
+        //fprintf(stdout, "pts %i ms\n", *pts);
         // Single NAL unit
         nalu[0] = 0;
         nalu[1] = 0;
@@ -213,7 +218,7 @@ bool _h265_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu
     return end_nalu;
 }
 
-bool _h264_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu, int *nalu_size)
+bool _h264_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu, int *nalu_size, uint64_t *pts)
 {
     bool end_nalu = false;
 
@@ -226,7 +231,7 @@ bool _h264_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu
 #define RTP_HEADER_SIZE 12
 
 // unpack rtp h26x payload according to RFC6184 (H264 over RTP) and RFC7798 (H265 over RTP)
-bool rtp_h26x_read_buffer(uint8_t *buffer, int n, uint8_t *nalu, int *nalu_size, bool h265)
+bool rtp_h26x_read_buffer(uint8_t *buffer, int n, uint8_t *nalu, int *nalu_size, bool h265, uint64_t *pts)
 {
     bool end_nalu = false;
     static bool first_rtp_pkt = true;
@@ -265,11 +270,11 @@ bool rtp_h26x_read_buffer(uint8_t *buffer, int n, uint8_t *nalu, int *nalu_size,
 
             if (h265)
             {
-                end_nalu = _h265_payload_read_buffer(payload, payload_size, nalu, nalu_size);
+                end_nalu = _h265_payload_read_buffer(payload, payload_size, nalu, nalu_size, pts);
             }
             else
             {
-                end_nalu = _h264_payload_read_buffer(payload, payload_size, nalu, nalu_size);
+                end_nalu = _h264_payload_read_buffer(payload, payload_size, nalu, nalu_size, pts);
             }
         }
         first_rtp_pkt = false;

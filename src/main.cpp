@@ -271,22 +271,13 @@ void *__FRAME_THREAD__(void *param)
 	return nullptr;
 }
 
+uint64_t rcv_pts;
 
 void *__DISPLAY_THREAD__(void *param)
 {
 	int ret;	
-	int frame_counter = 0;
-	float latency_avg[200];
-	float min_latency = 1844674407370955161; // almost MAX_uint64_t
-	float max_latency = 0;
-    struct timespec fps_start, fps_end, fps_last, first_frame;
-	double mean_frame_time;
-	double current_frame_time;
-	double total_deviation = 0.0;
-	double deviation, max_deviation = 0.0;
 
 	pthread_setname_np(pthread_self(), "__DISPLAY");
-	clock_gettime(CLOCK_MONOTONIC, &fps_start);
 
 	while (!frm_eos) {
 		int fb_id;
@@ -306,7 +297,7 @@ void *__DISPLAY_THREAD__(void *param)
 		clock_gettime(CLOCK_MONOTONIC, &ats);
 		fb_id = output_list->video_fb_id;
 
-        uint64_t decoding_pts=output_list->decoding_pts;
+        rcv_pts = output_list->decoding_pts;
 		output_list->video_fb_id=0;
 		ret = pthread_mutex_unlock(&video_mutex);
 		assert(!ret);
@@ -326,93 +317,7 @@ void *__DISPLAY_THREAD__(void *param)
 		ret = pthread_mutex_unlock(&osd_mutex);
 		assert(!ret);
 
-		frame_counter++;
 		osd_publish_uint_fact("video.displayed_frame", NULL, 0, 1);
-
-		uint64_t decode_and_handover_display_ms=get_time_ms()-decoding_pts;
-        //accumulate_and_print("D&Display",decode_and_handover_display_ms,&m_decode_and_handover_display_latency);
-		osd_publish_uint_fact("video.decode_and_handover_ms", NULL, 0, decode_and_handover_display_ms);
-        
-		clock_gettime(CLOCK_MONOTONIC, &fps_end);
-
-		uint64_t time_us=(fps_end.tv_sec - fps_start.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_start.tv_nsec)/1000ll) % 1000000ll;
-		if (time_us >= osd_vars.refresh_frequency_ms*1000) {
-			float sum = 0;
-			for (int i = 0; i < frame_counter; ++i) {
-				sum += latency_avg[i];
-				if (latency_avg[i] > max_latency) {
-					max_latency = latency_avg[i];
-				}
-				if (latency_avg[i] < min_latency) {
-					min_latency = latency_avg[i];
-				}
-			}
-			osd_vars.latency_avg = sum / (frame_counter);
-			osd_vars.latency_max = max_latency;
-			osd_vars.latency_min = min_latency;
-			osd_vars.current_framerate = frame_counter*(1000/osd_vars.refresh_frequency_ms);
-
-			SPDLOG_DEBUG("decoding decoding latency={:.2f} ms ({:.2f}, {:.2f}), framerate={} fps",
-						  osd_vars.latency_avg/1000.0, osd_vars.latency_max/1000.0,
-						  osd_vars.latency_min/1000.0, osd_vars.current_framerate);
-			fps_start = fps_end;
-			frame_counter = 0;
-			max_latency = 0;
-			min_latency = 1844674407370955161;
-		}
-		
-		//fprintf(stdout, "Display frame %u.%06d\n", fps_end.tv_sec, fps_end.tv_nsec / 1000);
-		//fprintf(stdout, "Time since last frame %llu\n", (fps_end.tv_sec - fps_last.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_last.tv_nsec)/1000ll) % 1000000ll);
-
-		if (stats.start == true)
-		{
-			stats.display_time_ms[stats.display_frame_count % MAX_FRAMES] = timespec_to_ms(fps_end);
-			/*fprintf(stdout, "stats.display_frame_count : %i, display_time_ms = %.1f ms\n", 
-				stats.display_frame_count,
-				stats.display_time_ms[stats.display_frame_count % MAX_FRAMES]);*/
-			stats.display_frame_count++;
-
-#if 0
-			if (stats.display_frame_count == 1)
-			{
-				// init computation
-				first_frame = fps_end;
-				
-			}
-			else
-			{
-				// compute frame time
-				current_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(fps_last));
-				mean_frame_time = (timespec_to_ms(fps_end) - timespec_to_ms(first_frame)) / stats.display_frame_count;
-			}
-			
-			//fprintf(stdout, "frame time: %.2f ms\n", current_frame_time);
-
-			// compute mean deviation from frame time
-			if (stats.display_frame_count > 60)
-			{
-				deviation = abs(mean_frame_time - current_frame_time);
-				total_deviation += deviation;
-				max_deviation = deviation > max_deviation ? deviation : max_deviation;			
-			}
-
-			if ((stats.display_frame_count % 60) == 0)
-			{
-				fprintf(stdout, "Mean frame time: %.2f ms\n", mean_frame_time);
-				fprintf(stdout, "Mean deviation:  %.2f ms\n", total_deviation / 60);
-				fprintf(stdout, "Max deviation:   %.2f ms\n", max_deviation);
-				max_deviation = 0;
-				total_deviation = 0;
-			}
-
-			fps_last = fps_end;
-#endif
-		}
-
-		//struct timespec rtime = frame_stats[output_list->video_poc];
-		latency_avg[frame_counter] = decode_and_handover_display_ms;
-		//printf("decoding current_latency=%.2f ms\n",  latency_avg[frame_counter]/1000.0);
-		
 	}
 end:	
 	spdlog::info("Display thread done.");
@@ -422,24 +327,16 @@ end:
 
 void *__VSYNC_THREAD__(void *param)
 {
-	struct timespec time_current_vsync;
-	double time_current_vsync_ms = 0.0;
-	double time_last_vsync_ms = 0.0;
-	double gst_max_latency = 0.0;
-	double gst_sum_max_latency = 0.0;
-	int gst_total_stats_number = 1;
-	int last_display_frame_count = 0;
-	int gst_max_latency_size = 0;
-	int gst_max_latency_frame_count = 0;
-	int gst_mean_size = 0;
-	int stats_frame_nb = 0;
-	double gst_mean_jitter = 0.0;
-	double gst_mean_period = 0.0;
-	double gst_last_period = 16.6;
-
 	_drmVBlank blank;
 	int rc;
 
+	int frame_counter = 0;
+	float latency_avg[200];
+	float min_latency = 1844674407370955161; // almost MAX_uint64_t
+	float max_latency = 0;
+    struct timespec fps_start, fps_end;
+
+	clock_gettime(CLOCK_MONOTONIC, &fps_start);
 	pthread_setname_np(pthread_self(), "__VSYNC");
 	while (!frm_eos) {
 		blank.request.type = DRM_VBLANK_RELATIVE;
@@ -451,70 +348,47 @@ void *__VSYNC_THREAD__(void *param)
 		}
 		else
 		{
-			#if 1
-			clock_gettime(CLOCK_MONOTONIC, &time_current_vsync);
-			time_current_vsync_ms = timespec_to_ms(time_current_vsync);
-			if (time_last_vsync_ms != 0.0)
-			{
-				int display_frame_count = stats.display_frame_count - 1;
-				double gst_before_time_ms = stats.gst_time_ms[(display_frame_count - 1) % MAX_FRAMES];
-				double gst_time_ms = stats.gst_time_ms[display_frame_count % MAX_FRAMES];
-				double display_time_ms = stats.display_time_ms[display_frame_count % MAX_FRAMES];
-				double gst_latency_ms = gst_time_ms - gst_before_time_ms;
-				int size = stats.frame_size[display_frame_count % MAX_FRAMES];
-
-				/*				
-				fprintf(stdout, "Frame: %i, Latency G-1->G: %.1f ms, Latency G->D: %.1f ms, D->V: %.1f ms, TOTAL G->V: %.1f ms, size: %i kb\n",
-								 display_frame_count, 
-								 gst_latency_ms,
-								 display_time_ms - gst_time_ms,
-								 time_current_vsync_ms - display_time_ms,
-								 time_current_vsync_ms - gst_time_ms,
-								 size);*/
-				if ((display_frame_count > 0)&&(last_display_frame_count != display_frame_count))
-				{
-					if (gst_latency_ms > gst_max_latency)
-					{
-						gst_max_latency = gst_latency_ms;
-						gst_max_latency_size = size;
-						gst_max_latency_frame_count = display_frame_count;
+			uint64_t current_time = get_time_ms();
+			uint64_t decode_and_handover_display_ms = current_time - rcv_pts;
+			//accumulate_and_print("D&Display",decode_and_handover_display_ms,&m_decode_and_handover_display_latency);
+			
+			osd_publish_uint_fact("video.decode_and_handover_ms", NULL, 0, decode_and_handover_display_ms);
+			//fprintf(stdout, "current_time: %lu\n", current_time);
+			//fprintf(stdout, "decode_and_handover_display_ms: %lu\n", decode_and_handover_display_ms);
+			
+			clock_gettime(CLOCK_MONOTONIC, &fps_end);
+			frame_counter++;
+			uint64_t time_us=(fps_end.tv_sec - fps_start.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_start.tv_nsec)/1000ll) % 1000000ll;
+			if (time_us >= osd_vars.refresh_frequency_ms*1000) {
+				float sum = 0;
+				for (int i = 0; i < frame_counter; ++i) {
+					sum += latency_avg[i];
+					if (latency_avg[i] > max_latency) {
+						max_latency = latency_avg[i];
 					}
-					gst_mean_size += size;
-					gst_mean_period += gst_latency_ms; 
-					gst_mean_jitter += abs(gst_latency_ms - gst_last_period);
-					stats_frame_nb++;
-					if (stats_frame_nb >= 120)
-					{
-						gst_sum_max_latency += gst_max_latency;
-						gst_mean_size /= stats_frame_nb;
-						gst_mean_period /= stats_frame_nb;
-						gst_mean_jitter /= stats_frame_nb;
-						fprintf(stdout, "Max gst latency on the last %i frames: %.1f ms on frame %i with size %i kb, Mean max gst latency: %.1f ms\n",
-									stats_frame_nb,
-									gst_max_latency,
-									gst_max_latency_frame_count,
-									gst_max_latency_size,
-									gst_sum_max_latency / gst_total_stats_number);
-						fprintf(stdout, "Mean gst jitter on the last %i frames: %.1f ms, mean period %.1f ms, mean size %i kb\n",
-									stats_frame_nb,
-									gst_mean_jitter,
-									gst_mean_period,
-									gst_mean_size);
-						gst_total_stats_number++;
-						gst_max_latency = 0.0;
-						gst_max_latency_size = 0;
-						gst_mean_size = 0;
-						gst_mean_jitter = 0.0;
-						gst_last_period = gst_mean_period;
-						gst_mean_period = 0.0; 
-						stats_frame_nb = 0;
+					if (latency_avg[i] < min_latency) {
+						min_latency = latency_avg[i];
 					}
 				}
-				last_display_frame_count = display_frame_count;
-				
+				osd_vars.latency_avg = sum / (frame_counter);
+				osd_vars.latency_max = max_latency;
+				osd_vars.latency_min = min_latency;
+				osd_vars.current_framerate = frame_counter*(1000/osd_vars.refresh_frequency_ms);
+
+				SPDLOG_DEBUG("decoding decoding latency={:.2f} ms ({:.2f}, {:.2f}), framerate={} fps",
+							osd_vars.latency_avg/1000.0, osd_vars.latency_max/1000.0,
+							osd_vars.latency_min/1000.0, osd_vars.current_framerate);
+				fps_start = fps_end;
+				frame_counter = 0;
+				max_latency = 0;
+				min_latency = 1844674407370955161;
 			}
-			time_last_vsync_ms = time_current_vsync_ms;
-			#endif
+			
+	
+
+			//struct timespec rtime = frame_stats[output_list->video_poc];
+			latency_avg[frame_counter] = decode_and_handover_display_ms;
+			//printf("decoding current_latency=%.2f ms\n",  latency_avg[frame_counter]/1000.0);
 		}
 	}
 	spdlog::info("Vsync thread done.");
@@ -545,7 +419,7 @@ void sigusr1_handler(int signum) {
 
 
 int decoder_stalled_count=0;
-bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len){
+bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len, uint64_t pts){
     
 	/*
 	fprintf(stdout, "frame decoder hdr1: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[0], ((uint8_t*) data_p)[1], ((uint8_t*) data_p)[2], ((uint8_t*) data_p)[3], ((uint8_t*) data_p)[4], ((uint8_t*) data_p)[5], ((uint8_t*) data_p)[6], ((uint8_t*) data_p)[7]);
@@ -556,8 +430,8 @@ bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len){
     mpp_packet_set_size(packet, data_len);
     mpp_packet_set_pos(packet, data_p);
     mpp_packet_set_length(packet, data_len);
-	// TODO : voir comment utiliser le timestamp RTP dans ce cas
-    mpp_packet_set_pts(packet,(RK_S64) get_time_ms());
+    //mpp_packet_set_pts(packet,(RK_S64) get_time_ms());
+	mpp_packet_set_pts(packet,(RK_S64) pts);
     // Feed the data to mpp until either timeout (in which case the decoder might have stalled)
     // or success
     uint64_t data_feed_begin = get_time_ms();
@@ -600,10 +474,9 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 
 	uint8_t * buffer = (uint8_t *)malloc(MAX_RTP_PACKET_SIZE);
 	int nalu_size = 0;
-	int frame_nb = 0;
-	struct timespec gst_end;
     long long bytes_received = 0; 
     uint64_t period_start=0;
+	uint64_t pts = 0;
 
 	bool ish265 = false;
 	if (codec == VideoCodec::H265) {
@@ -618,27 +491,10 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 		int size = rtp_pkt_rcv(buffer);
 		if (size > 0)
 		{
-			bool end_nalu = rtp_h26x_read_buffer(buffer, size, g_nalu, &nalu_size, ish265);
+			bool end_nalu = rtp_h26x_read_buffer(buffer, size, g_nalu, &nalu_size, ish265, &pts);
 			if (end_nalu)
 			{
-				clock_gettime(CLOCK_MONOTONIC, &gst_end);
-
-				feed_packet_to_decoder(packet, g_nalu, nalu_size);
-
-				// log stats, wait at least 100 frames for decoding pipeline to be stable
-				// take only video frames (size > 1024)
-				if ((nalu_size > 1024)&&(frame_nb > 100))
-				{
-					stats.start = true;
-					
-					stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] = timespec_to_ms(gst_end);
-					stats.frame_size[stats.gst_frame_count % MAX_FRAMES] = nalu_size;
-					/*fprintf(stdout, "Received gstreamer frame %i, time since last frame %.1f ms\n",
-									stats.gst_frame_count,
-									stats.gst_time_ms[stats.gst_frame_count % MAX_FRAMES] - stats.gst_time_ms[(stats.gst_frame_count - 1) % MAX_FRAMES]);*/
-					stats.gst_frame_count++;
-				}
-				frame_nb++;
+				feed_packet_to_decoder(packet, g_nalu, nalu_size, pts);
 
 				bytes_received += nalu_size;
 				uint64_t now = get_time_ms();
