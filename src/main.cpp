@@ -461,6 +461,35 @@ void set_eos_to_decoder(MppPacket *packet)
 }
 
 
+
+static void printNaluJitter(uint64_t cur_time_ms, uint32_t nalu_size)
+{
+	static int nalu_nb = 0;
+	static uint64_t mean_period = 0;
+	static uint64_t max_period = 0;
+	static uint64_t last_nalu_time = 0;
+	static uint64_t max_period_nalu_size = 0;
+
+	if ((last_nalu_time != 0)&&(nalu_size > 1000)) {
+		uint64_t cur_period = cur_time_ms - last_nalu_time;
+		fprintf(stdout, "G-1 -> G: %lu (size: %i)\n", cur_period, nalu_size);
+		mean_period += cur_period;
+		if (max_period < cur_period) {
+			max_period_nalu_size = nalu_size;
+			max_period = cur_period;
+		}
+		if (nalu_nb % 60 == 0) {
+			fprintf(stdout, "Mean: %lu, Max %lu (size: %i)\n", mean_period / 60, max_period, max_period_nalu_size);
+			mean_period = 0;
+			max_period = 0;
+			max_period_nalu_size = 0;
+		}
+		nalu_nb++;
+	}
+
+	last_nalu_time = cur_time_ms;
+}
+
 #include "rtp_h26x.h"
 
 // max 1MB frame size
@@ -506,6 +535,8 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 					bytes_received = 0;
 				}
 
+				printNaluJitter(now, nalu_size);
+
 				nalu_size = 0; // TODO: check if this is needed
 			}
 		}
@@ -516,6 +547,7 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 }
 
 
+
 uint64_t first_frame_ms=0;
 void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoCodec& codec){
     GstRtpReceiver receiver(gst_udp_port, codec);
@@ -524,14 +556,14 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
     auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
         // Let the gst pull thread run at quite high priority
         static bool first= false;
-		static int frame_nb = 0;
-		struct timespec gst_end;
-        if(first){
+		if(first){
             SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
             first= false;
         }
 		bytes_received += frame->size();
 		uint64_t now = get_time_ms();
+
+        printNaluJitter(now, frame->size());
 
 		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
 		if ((now-period_start) >= 1000) {
@@ -544,6 +576,9 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
         if (dvr_enabled && dvr != NULL) {
 			dvr->frame(frame);
         }
+
+
+
     };
     receiver.start_receiving(cb);
     while (!signal_flag){
@@ -942,9 +977,9 @@ int main(int argc, char **argv)
 	}
 
 	////////////////////////////////////////////// MAIN LOOP
-	//read_stream((void**)packet, listen_port, codec);
-	read_gstreamerpipe_stream((void**)packet, listen_port, codec);
-	
+	read_stream((void**)packet, listen_port, codec);
+	//read_gstreamerpipe_stream((void**)packet, listen_port, codec);
+
 	////////////////////////////////////////////// MPI CLEANUP
 
 	ret = pthread_join(tid_frame, NULL);
