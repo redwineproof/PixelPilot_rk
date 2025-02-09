@@ -48,7 +48,6 @@ extern "C" {
 #include "osd.h"
 #include "osd.hpp"
 #include "dvr.h"
-#include "gstrtpreceiver.h"
 #include "scheduling_helper.hpp"
 #include "time_util.h"
 #include "pixelpilot_config.h"

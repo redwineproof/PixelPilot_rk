@@ -7,7 +7,6 @@
 #include "dvr.h"
 #include "minimp4.h"
 
-#include "gstrtpreceiver.h"
 extern "C" {
 #include "osd.h"
 }
