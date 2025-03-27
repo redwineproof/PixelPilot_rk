@@ -13,6 +13,8 @@
 struct MP4E_mux_tag;
 struct mp4_h26x_writer_tag;
 
+
+
 struct video_params {
     uint32_t video_frm_width;
     uint32_t video_frm_height;

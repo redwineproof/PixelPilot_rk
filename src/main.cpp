@@ -19,6 +19,7 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <errno.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -39,7 +40,6 @@ extern "C" {
 #include "main.h"
 #include "drm.h"
 #include "rtp.h"
-
 #include "mavlink/common/mavlink.h"
 #include "mavlink.h"
 }
@@ -87,6 +87,19 @@ bool osd_custom_message = false;
 
 VideoCodec codec = VideoCodec::H265;
 Dvr *dvr = NULL;
+
+
+typedef struct {
+	bool start;
+	double gst_time_ms[MAX_FRAMES];
+	double display_time_ms[MAX_FRAMES];
+	long frame_size[MAX_FRAMES];
+	int gst_frame_count;
+	int display_frame_count;
+} t_latency_stats;
+
+t_latency_stats stats;
+
 
 void init_buffer(MppFrame frame) {
 	output_list->video_frm_width = mpp_frame_get_width(frame);
@@ -143,6 +156,7 @@ void init_buffer(MppFrame frame) {
 		info.type = MPP_BUFFER_TYPE_DRM;
 		info.size = dmcd.width*dmcd.height;
 		info.fd = dph.fd;
+		info.index = i;
 		ret = mpp_buffer_commit(mpi.frm_grp, &info);
 		assert(!ret);
 		mpi.frame_to_drm[i].prime_fd = info.fd; // dups fd						
@@ -177,7 +191,115 @@ void init_buffer(MppFrame frame) {
 	if (dvr != NULL){
 		dvr->set_video_params(output_list->video_frm_width, output_list->video_frm_height, codec);
 	}
+	// stats setup 
+	stats.start = false;
+	stats.gst_frame_count = 0;
+	stats.display_frame_count = 0;
 }
+
+double timespec_to_ms(struct timespec& ts) {
+    return (ts.tv_sec + ts.tv_nsec / 1e9) * 1000;
+}
+
+
+#define K_TS_BUFFER_SIZE 10
+
+
+typedef struct {
+    unsigned long      frameNb;
+    unsigned long long vsync_timestamp;
+    unsigned long long framestart_timestamp;
+    unsigned long long frameend_timestamp;
+    unsigned long long ispframedone_timestamp;
+	unsigned long long vencdone_timestamp;
+    unsigned long long one_way_delay_ns;
+} air_timestamp_buffer_t;
+
+air_timestamp_buffer_t air_timestamps;
+
+typedef struct {
+	unsigned long long     rcv_begin_timestamp;
+	unsigned long long     nal_rcvd_timestamp;
+	unsigned long long     frame_decoded_timestamp;
+	unsigned long long     frame_displayed_timestamp;
+	unsigned long long     vsync_timestamp;
+} ground_timestamp_buffer_t;
+
+typedef struct {
+	unsigned long long        air_time_ns;
+	unsigned long long        ground_time_ns;
+	air_timestamp_buffer_t    air;
+	ground_timestamp_buffer_t ground;
+} air_ground_timestamp_buffer_t;
+
+
+typedef struct
+{
+	air_ground_timestamp_buffer_t buffer[K_TS_BUFFER_SIZE];
+	unsigned long frame_counter;
+} air_ground_timestamp_buffers_t;
+
+air_ground_timestamp_buffers_t ts_buffers;
+
+static void record_nalu_rcv_ts(unsigned long long recv_begin_ts, unsigned long frameNb)
+{
+	unsigned long long ts = get_time_ns();
+
+	//fprintf(stdout, "record_nalu_rcv_ts %lu, ts %llu us\n", frameNb, recv_begin_ts / 1000);
+
+	ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.rcv_begin_timestamp = recv_begin_ts;
+	ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.nal_rcvd_timestamp = ts;
+}
+
+static void record_frame_decoded_ts(unsigned long frameNb)
+{
+	unsigned long long ts = get_time_ns();
+	ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.frame_decoded_timestamp = ts;
+}
+
+static void record_frame_displayed_ts(unsigned long frameNb)
+{
+	unsigned long long ts = get_time_ns();
+	ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.frame_displayed_timestamp = ts;
+	ts_buffers.frame_counter = frameNb;
+}
+
+#define DEBUG
+
+static void record_vsync_ts(void)
+{
+	unsigned long long ts = get_time_ns();
+	unsigned long frame_counter = ts_buffers.frame_counter;
+	air_ground_timestamp_buffer_t *buf = &ts_buffers.buffer[frame_counter % K_TS_BUFFER_SIZE];
+	buf->ground.vsync_timestamp = ts;
+
+	//long long adjust_air_to_ground = buf->ground_time_ns - buf->air_time_ns + buf->air.one_way_delay_ns;
+	long long adjust_air_to_ground = buf->ground_time_ns - buf->air_time_ns - buf->air.one_way_delay_ns;
+
+#ifdef DEBUG
+	//fprintf(stdout, "Packet displayed %lu =>\n", frame_counter);
+	fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n", (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000);
+	//fprintf(stdout, "Sensor Vsync to ISP start:        %llu us\n", (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000);
+	//fprintf(stdout, "ISP treatment:                    %llu us\n", (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000);
+	//fprintf(stdout, "VPE + VENC treatment:             %llu us\n", (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000);
+	//fprintf(stdout, "Transmission time:                %lli us\n", (((long long) buf->ground.nal_rcvd_timestamp) - ((long long) buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000);
+	//fprintf(stdout, "Nalu start to Nalu End:           %llu us\n", (buf->ground.nal_rcvd_timestamp - buf->ground.rcv_begin_timestamp) / 1000);
+	//fprintf(stdout, "Nalu to Frame Decoded:            %llu us\n", (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000);
+	//fprintf(stdout, "Frame Decoded to Frame Displayed: %llu us\n", (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000);
+	//fprintf(stdout, "Frame Displayed to VSync:         %llu us\n", (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000);
+	
+	fprintf(stdout, "S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu\n", 
+		            (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000,
+                    (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000,
+                    (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000,
+                    (((long long) buf->ground.nal_rcvd_timestamp) - ((long long) buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000,
+                    (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000,
+                    (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
+                    (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000);
+#endif
+}
+
+
 
 // __FRAME_THREAD__
 //
@@ -214,10 +336,12 @@ void *__FRAME_THREAD__(void *param)
 				if (buffer) {
 					output_list->video_poc = mpp_frame_get_poc(frame);
 					uint64_t feed_data_ts =  mpp_frame_get_pts(frame);
-
+					record_frame_decoded_ts(feed_data_ts);
+					//fprintf(stdout, "Frame pts %llu ms\n", feed_data_ts);
 					MppBufferInfo info;
 					ret = mpp_buffer_info_get(buffer, &info);
 					assert(!ret);
+
 					for (i=0; i<MAX_FRAMES; i++) {
 						if (mpi.frame_to_drm[i].prime_fd == info.fd) break;
 					}
@@ -248,18 +372,14 @@ void *__FRAME_THREAD__(void *param)
 	return nullptr;
 }
 
+uint64_t rcv_pts;
+
 
 void *__DISPLAY_THREAD__(void *param)
 {
 	int ret;	
-	int frame_counter = 0;
-	float latency_avg[200];
-	float min_latency = 1844674407370955161; // almost MAX_uint64_t
-	float max_latency = 0;
-    struct timespec fps_start, fps_end;
 
 	pthread_setname_np(pthread_self(), "__DISPLAY");
-	clock_gettime(CLOCK_MONOTONIC, &fps_start);
 
 	while (!frm_eos) {
 		int fb_id;
@@ -275,11 +395,15 @@ void *__DISPLAY_THREAD__(void *param)
 				goto end;
 			}
 		}
-		struct timespec ts, ats;
-		clock_gettime(CLOCK_MONOTONIC, &ats);
+
+		record_frame_displayed_ts(output_list->decoding_pts);
+
+		//struct timespec ts, ats;
+		//clock_gettime(CLOCK_MONOTONIC, &ats);
 		fb_id = output_list->video_fb_id;
 
-        uint64_t decoding_pts=output_list->decoding_pts;
+        //rcv_pts = output_list->decoding_pts;
+		//fprintf(stdout, "Display pts %llu ms\n", rcv_pts);
 		output_list->video_fb_id=0;
 		ret = pthread_mutex_unlock(&video_mutex);
 		assert(!ret);
@@ -299,48 +423,83 @@ void *__DISPLAY_THREAD__(void *param)
 		ret = pthread_mutex_unlock(&osd_mutex);
 		assert(!ret);
 
-		frame_counter++;
 		osd_publish_uint_fact("video.displayed_frame", NULL, 0, 1);
-
-		uint64_t decode_and_handover_display_ms=get_time_ms()-decoding_pts;
-        //accumulate_and_print("D&Display",decode_and_handover_display_ms,&m_decode_and_handover_display_latency);
-		osd_publish_uint_fact("video.decode_and_handover_ms", NULL, 0, decode_and_handover_display_ms);
-        
-		clock_gettime(CLOCK_MONOTONIC, &fps_end);
-		uint64_t time_us=(fps_end.tv_sec - fps_start.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_start.tv_nsec)/1000ll) % 1000000ll;
-		if (time_us >= osd_vars.refresh_frequency_ms*1000) {
-			float sum = 0;
-			for (int i = 0; i < frame_counter; ++i) {
-				sum += latency_avg[i];
-				if (latency_avg[i] > max_latency) {
-					max_latency = latency_avg[i];
-				}
-				if (latency_avg[i] < min_latency) {
-					min_latency = latency_avg[i];
-				}
-			}
-			osd_vars.latency_avg = sum / (frame_counter);
-			osd_vars.latency_max = max_latency;
-			osd_vars.latency_min = min_latency;
-			osd_vars.current_framerate = frame_counter*(1000/osd_vars.refresh_frequency_ms);
-
-			SPDLOG_DEBUG("decoding decoding latency={:.2f} ms ({:.2f}, {:.2f}), framerate={} fps",
-						  osd_vars.latency_avg/1000.0, osd_vars.latency_max/1000.0,
-						  osd_vars.latency_min/1000.0, osd_vars.current_framerate);
-			
-			fps_start = fps_end;
-			frame_counter = 0;
-			max_latency = 0;
-			min_latency = 1844674407370955161;
-		}
-		
-		//struct timespec rtime = frame_stats[output_list->video_poc];
-		latency_avg[frame_counter] = decode_and_handover_display_ms;
-		//printf("decoding current_latency=%.2f ms\n",  latency_avg[frame_counter]/1000.0);
-		
 	}
 end:	
 	spdlog::info("Display thread done.");
+	return nullptr;
+}
+
+
+void *__VSYNC_THREAD__(void *param)
+{
+	_drmVBlank blank;
+	int rc;
+
+	int frame_counter = 0;
+	float latency_avg[200];
+	float min_latency = 1844674407370955161; // almost MAX_uint64_t
+	float max_latency = 0;
+    struct timespec fps_start, fps_end;
+
+	clock_gettime(CLOCK_MONOTONIC, &fps_start);
+	pthread_setname_np(pthread_self(), "__VSYNC");
+	while (!frm_eos) {
+		blank.request.type = DRM_VBLANK_RELATIVE;
+		blank.request.sequence = 1;
+		if (rc = drmWaitVBlank(drm_fd, &blank)) {
+			//fprintf(stderr, "drmWaitVBlank %i %i\n", rc, errno);
+			//spdlog::info("Vsync thread done.");
+			//return nullptr;
+		}
+		else
+		{
+			record_vsync_ts();
+
+			uint64_t current_time = get_time_ms();
+			uint64_t decode_and_handover_display_ms = current_time - rcv_pts;
+			//accumulate_and_print("D&Display",decode_and_handover_display_ms,&m_decode_and_handover_display_latency);
+			
+			osd_publish_uint_fact("video.decode_and_handover_ms", NULL, 0, decode_and_handover_display_ms);
+			//fprintf(stdout, "current_time: %lu\n", current_time);
+			//fprintf(stdout, "decode_and_handover_display_ms: %lu\n", decode_and_handover_display_ms);
+			
+			clock_gettime(CLOCK_MONOTONIC, &fps_end);
+			frame_counter++;
+			uint64_t time_us=(fps_end.tv_sec - fps_start.tv_sec)*1000000ll + ((fps_end.tv_nsec - fps_start.tv_nsec)/1000ll) % 1000000ll;
+			if (time_us >= osd_vars.refresh_frequency_ms*1000) {
+				float sum = 0;
+				for (int i = 0; i < frame_counter; ++i) {
+					sum += latency_avg[i];
+					if (latency_avg[i] > max_latency) {
+						max_latency = latency_avg[i];
+					}
+					if (latency_avg[i] < min_latency) {
+						min_latency = latency_avg[i];
+					}
+				}
+				osd_vars.latency_avg = sum / (frame_counter);
+				osd_vars.latency_max = max_latency;
+				osd_vars.latency_min = min_latency;
+				osd_vars.current_framerate = frame_counter*(1000/osd_vars.refresh_frequency_ms);
+
+				SPDLOG_DEBUG("decoding decoding latency={:.2f} ms ({:.2f}, {:.2f}), framerate={} fps",
+							osd_vars.latency_avg/1000.0, osd_vars.latency_max/1000.0,
+							osd_vars.latency_min/1000.0, osd_vars.current_framerate);
+				fps_start = fps_end;
+				frame_counter = 0;
+				max_latency = 0;
+				min_latency = 1844674407370955161;
+			}
+			
+	
+
+			//struct timespec rtime = frame_stats[output_list->video_poc];
+			latency_avg[frame_counter] = decode_and_handover_display_ms;
+			//printf("decoding current_latency=%.2f ms\n",  latency_avg[frame_counter]/1000.0);
+		}
+	}
+	spdlog::info("Vsync thread done.");
 	return nullptr;
 }
 
@@ -368,12 +527,19 @@ void sigusr1_handler(int signum) {
 
 
 int decoder_stalled_count=0;
-bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len){
-    mpp_packet_set_data(packet, data_p);
+bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len, uint64_t pts){
+    
+	/*
+	fprintf(stdout, "frame decoder hdr1: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[0], ((uint8_t*) data_p)[1], ((uint8_t*) data_p)[2], ((uint8_t*) data_p)[3], ((uint8_t*) data_p)[4], ((uint8_t*) data_p)[5], ((uint8_t*) data_p)[6], ((uint8_t*) data_p)[7]);
+	fprintf(stdout, "frame decoder hdr2: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[8], ((uint8_t*) data_p)[9], ((uint8_t*) data_p)[10], ((uint8_t*) data_p)[11], ((uint8_t*) data_p)[12], ((uint8_t*) data_p)[13], ((uint8_t*) data_p)[14], ((uint8_t*) data_p)[15]);
+	fprintf(stdout, "frame decoder hdr3: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[16], ((uint8_t*) data_p)[17], ((uint8_t*) data_p)[18], ((uint8_t*) data_p)[19], ((uint8_t*) data_p)[20], ((uint8_t*) data_p)[21], ((uint8_t*) data_p)[22], ((uint8_t*) data_p)[23]);
+	*/
+	mpp_packet_set_data(packet, data_p);
     mpp_packet_set_size(packet, data_len);
     mpp_packet_set_pos(packet, data_p);
     mpp_packet_set_length(packet, data_len);
-    mpp_packet_set_pts(packet,(RK_S64) get_time_ms());
+    //mpp_packet_set_pts(packet,(RK_S64) get_time_ms());
+	mpp_packet_set_pts(packet,(RK_S64) pts);
     // Feed the data to mpp until either timeout (in which case the decoder might have stalled)
     // or success
     uint64_t data_feed_begin = get_time_ms();
@@ -391,6 +557,318 @@ bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len){
     return true;
 }
 
+void set_eos_to_decoder(MppPacket *packet)
+{
+    spdlog::info("Feeding eos");
+    mpp_packet_set_eos(packet);
+    mpp_packet_set_length(packet, 0);
+    int ret = 0;
+    while (MPP_OK != (ret = mpi.mpi->decode_put_packet(mpi.ctx, packet))) {
+        usleep(10000);
+    }
+}
+
+
+
+static void printNaluJitter(uint64_t cur_time_ms, uint32_t nalu_size)
+{
+	static int nalu_nb = 0;
+	static uint64_t mean_period = 0;
+	static uint64_t max_period = 0;
+	static uint64_t last_nalu_time = 0;
+	static uint64_t max_period_nalu_size = 0;
+
+	if ((last_nalu_time != 0)&&(nalu_size > 1000)) {
+		uint64_t cur_period = cur_time_ms - last_nalu_time;
+		fprintf(stdout, "G-1 -> G: %lu (size: %i)\n", cur_period, nalu_size);
+		mean_period += cur_period;
+		if (max_period < cur_period) {
+			max_period_nalu_size = nalu_size;
+			max_period = cur_period;
+		}
+		if (nalu_nb % 60 == 0) {
+			fprintf(stdout, "Mean: %lu, Max %lu (size: %i)\n", mean_period / 60, max_period, max_period_nalu_size);
+			mean_period = 0;
+			max_period = 0;
+			max_period_nalu_size = 0;
+		}
+		nalu_nb++;
+	}
+
+	last_nalu_time = cur_time_ms;
+}
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <errno.h>
+#define GROUND_PORT 12345 // Port du système "ground"
+#define PERIOD_MS 1000    // Période en millisecondes
+#define TIMEOUT_US 100000    // Timeout en microsecondes
+
+static int sockfd = -1;
+
+// Define htonll and ntohll functions
+uint64_t htonll(uint64_t value) {
+    if (htonl(1) != 1) {
+        return ((uint64_t)htonl(value & 0xFFFFFFFF) << 32) | htonl(value >> 32);
+    } else {
+        return value;
+    }
+}
+
+uint64_t ntohll(uint64_t value) {
+    if (ntohl(1) != 1) {
+        return ((uint64_t)ntohl(value & 0xFFFFFFFF) << 32) | ntohl(value >> 32);
+    } else {
+        return value;
+    }
+}
+
+
+#define DEBUG
+
+void *ground_thread_func(void *arg) {
+
+	struct sockaddr_in air_addr;
+	socklen_t addr_len = sizeof(air_addr);
+	struct timespec ts;
+	unsigned long long air_time_ns;
+	unsigned long long ground_time_ns;
+	unsigned long long ground_time_ns_network;
+	air_timestamp_buffer_t air_timestamps;
+
+	// Recevoir le temps "air" avec timeout
+	struct timeval timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = TIMEOUT_US;
+	setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    while (!signal_flag) {
+
+	#if 1
+		if (recvfrom(sockfd, &air_time_ns, sizeof(air_time_ns), 0, (struct sockaddr *)&air_addr, &addr_len) < 0) {
+			if (errno == EWOULDBLOCK || errno == EAGAIN) {
+				printf("Receive timeout\n");
+			} else {
+				perror("Failed to receive data");
+			}
+		}
+		else
+		{
+			air_time_ns = ntohll(air_time_ns);
+			// Capturer le temps "ground"
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			ground_time_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+		
+			// Envoyer le temps "ground" au système "air"
+			ground_time_ns_network = htonll(ground_time_ns);
+			if (sendto(sockfd, &ground_time_ns_network, sizeof(ground_time_ns_network), 0, (struct sockaddr *)&air_addr, addr_len) < 0) {
+				perror("Failed to send data");
+			}
+			else
+			{
+		
+			#ifdef DEBUG
+				//printf("Received air time: %llu us\n", air_time_ns / 1000);
+				//printf("Ground time: %llu us\n", ground_time_ns / 1000);
+			#endif
+				if (recvfrom(sockfd, &air_timestamps, sizeof(air_timestamps), 0, (struct sockaddr *)&air_addr, &addr_len) < 0) {
+					if (errno == EWOULDBLOCK || errno == EAGAIN) {
+						printf("Receive timeout\n");
+					} else {
+						perror("Failed to receive data");
+					}
+				}
+				else
+				{
+					// Convertir les champs en host byte order
+					air_timestamps.frameNb = ntohl(air_timestamps.frameNb);
+					air_timestamps.vsync_timestamp = ntohll(air_timestamps.vsync_timestamp);
+					air_timestamps.framestart_timestamp = ntohll(air_timestamps.framestart_timestamp);
+					air_timestamps.frameend_timestamp = ntohll(air_timestamps.frameend_timestamp);
+					air_timestamps.ispframedone_timestamp = ntohll(air_timestamps.ispframedone_timestamp);
+					air_timestamps.vencdone_timestamp = ntohll(air_timestamps.vencdone_timestamp);
+					air_timestamps.one_way_delay_ns = ntohll(air_timestamps.one_way_delay_ns);
+
+					// store it
+					//fprintf(stdout, "Packet rcv %lu =>\n", air_timestamps.frameNb);
+					//fprintf(stdout, "AirTime:                %llu us\n", air_time_ns / 1000);
+					//fprintf(stdout, "GroundTime:             %llu us\n", ground_time_ns / 1000);
+					//fprintf(stdout, "Venc Done:              %llu us\n", air_timestamps.vencdone_timestamp / 1000);
+					//fprintf(stdout, "Air One Way Delay:      %llu us\n", air_timestamps.one_way_delay_ns / 1000);
+
+					memcpy(&ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air, &air_timestamps, sizeof(air_timestamp_buffer_t));
+					ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_time_ns = air_time_ns;
+					ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].ground_time_ns = ground_time_ns;
+
+					/*
+					fprintf(stdout, "FrameNb: %i Air: %llu, Delay: %llu, Venc: %llu, Ground: %llu\n", 
+						air_timestamps.frameNb,
+						air_time_ns,
+						air_timestamps.one_way_delay_ns,
+						air_timestamps.vencdone_timestamp,
+						ground_time_ns
+					);*/
+				}
+			}
+		}
+	#endif
+    }
+    return NULL;
+}
+
+static pthread_t ground_thread;
+
+int timestamp_init(void)
+{
+	// Créer un socket UDP
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Failed to create socket");
+        return 1;
+    }
+
+    struct sockaddr_in ground_addr;
+    memset(&ground_addr, 0, sizeof(ground_addr));
+    ground_addr.sin_family = AF_INET;
+    ground_addr.sin_addr.s_addr = INADDR_ANY;
+    ground_addr.sin_port = htons(GROUND_PORT);
+
+    // Lier le socket à l'adresse et au port
+    if (bind(sockfd, (struct sockaddr *)&ground_addr, sizeof(ground_addr)) < 0) {
+        perror("Failed to bind socket");
+        close(sockfd);
+        return 1;
+    }
+
+	// Créer et démarrer le thread pour le système "ground"
+	if (pthread_create(&ground_thread, NULL, ground_thread_func, NULL) != 0) {
+		perror("Failed to create ground thread");
+		close(sockfd);
+		return 1;
+	}
+
+	return 0;
+}
+
+int timestamp_exit(void)
+{
+	pthread_join(ground_thread, NULL);
+
+    // Fermer le socket à la fin du programme
+    close(sockfd);
+	return 0;
+}
+#define SEI_PAYLOAD_TYPE_USER_DATA_UNREGISTERED 5
+static bool nalu_sei_get_user_data(uint8_t *nalu, bool ish265, uint32_t* frameNb)
+{
+	if (ish265) {
+		if (nalu[0] == 0 && nalu[1] == 0 && nalu[2] == 0 && nalu[3] == 1) {
+			if (nalu[4] == 0x4E && nalu[5]== SEI_PAYLOAD_TYPE_USER_DATA_UNREGISTERED) {
+				memcpy (frameNb, &nalu[7], 4);
+				*frameNb = ntohl(*frameNb);
+				//fprintf(stderr, "FrameNb: %x %x %x %x\n",nalu[7], nalu[8], nalu[9], nalu[10]);
+				return true;
+			}
+		}
+	} else {
+		if (nalu[0] == 0 && nalu[1] == 0 && nalu[2] == 0 && nalu[3] == 1) {
+			if (nalu[4] == 6 && nalu[5]== SEI_PAYLOAD_TYPE_USER_DATA_UNREGISTERED) {
+				memcpy (frameNb, &nalu[7], 4);
+				*frameNb = ntohl(*frameNb);
+				//fprintf(stderr, "FrameNb: %x %x %x %x\n",nalu[7], nalu[8], nalu[9], nalu[10]);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+
+#include "rtp_h26x.h"
+
+// max 1MB frame size
+#define MAX_NALU_SIZE 1024 * 1024
+uint8_t g_nalu[MAX_NALU_SIZE];
+
+#define MAX_FRAME_SIZE MAX_NALU_SIZE
+uint8_t g_frame[MAX_FRAME_SIZE];
+
+void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
+
+	uint8_t * buffer = (uint8_t *)malloc(MAX_RTP_PACKET_SIZE);
+	int nalu_size = 0;
+    long long bytes_received = 0; 
+    uint64_t period_start=0;
+	uint64_t pts = 0;
+    uint32_t frameNb = 0;
+	uint32_t size_user_data;
+
+	bool ish265 = false;
+	if (codec == VideoCodec::H265) {
+		ish265 = true;
+	}
+
+	// init rtp udp port
+	rtp_h26x_init(port);
+
+	timestamp_init();
+
+	// loop until signal_flag is set
+	while (!signal_flag) {
+		int size = rtp_pkt_rcv(buffer);
+		if (size > 0)
+		{
+			bool end_nalu = rtp_h26x_read_buffer(buffer, size, g_nalu, &nalu_size, ish265, &pts);
+			if (end_nalu)
+			{
+				if (nalu_sei_get_user_data(g_nalu, ish265, &frameNb))
+				{
+					//fprintf(stdout, "FrameNb: %u\n", frameNb);
+					//fprintf(stdout, "User data: %u, %s\n", size_user_data, payload_user_data[0]);
+				}
+				else
+				{
+					/*
+					fprintf(stdout, "FrameNb: %i, Rcv: %llu\n", 
+						frameNb,
+						pts / 1000
+					);*/
+
+					record_nalu_rcv_ts(pts, frameNb);
+					feed_packet_to_decoder(packet, g_nalu, nalu_size, frameNb);
+
+					bytes_received += nalu_size;
+					uint64_t now = get_time_ms();
+					osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, nalu_size);
+					if ((now-period_start) >= 1000) {
+						period_start = now;
+						osd_vars.bw_curr = (osd_vars.bw_curr + 1) % 10;
+						osd_vars.bw_stats[osd_vars.bw_curr] = bytes_received ;
+						bytes_received = 0;
+					}
+
+					//printNaluJitter(now, nalu_size);
+				}
+				nalu_size = 0; // TODO: check if this is needed
+			}
+		}
+	}
+
+	set_eos_to_decoder(packet);
+	rtp_h26x_deinit();
+	timestamp_exit();
+}
+
+
+
 uint64_t first_frame_ms=0;
 void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoCodec& codec){
     GstRtpReceiver receiver(gst_udp_port, codec);
@@ -399,12 +877,15 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
     auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
         // Let the gst pull thread run at quite high priority
         static bool first= false;
-        if(first){
+		if(first){
             SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
             first= false;
         }
 		bytes_received += frame->size();
 		uint64_t now = get_time_ms();
+
+        printNaluJitter(now, frame->size());
+
 		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
 		if ((now-period_start) >= 1000) {
 			period_start = now;
@@ -412,10 +893,13 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
 			osd_vars.bw_stats[osd_vars.bw_curr] = bytes_received ;
 			bytes_received = 0;
 		}
-        feed_packet_to_decoder(packet,frame->data(),frame->size());
+        feed_packet_to_decoder(packet,frame->data(),frame->size(), now);
         if (dvr_enabled && dvr != NULL) {
 			dvr->frame(frame);
         }
+
+
+
     };
     receiver.start_receiving(cb);
     while (!signal_flag){
@@ -772,7 +1256,7 @@ int main(int argc, char **argv)
 	ret = pthread_cond_init(&video_cond, NULL);
 	assert(!ret);
 
-	pthread_t tid_frame, tid_display, tid_osd, tid_mavlink, tid_dvr;
+	pthread_t tid_frame, tid_display, tid_vsync, tid_osd, tid_mavlink, tid_dvr;
 	if (dvr_template != NULL) {
 		dvr_thread_params args;
 		args.filename_template = dvr_template;
@@ -790,6 +1274,8 @@ int main(int argc, char **argv)
 	ret = pthread_create(&tid_frame, NULL, __FRAME_THREAD__, NULL);
 	assert(!ret);
 	ret = pthread_create(&tid_display, NULL, __DISPLAY_THREAD__, NULL);
+	assert(!ret);
+	ret = pthread_create(&tid_vsync, NULL, __VSYNC_THREAD__, NULL);
 	assert(!ret);
 	if (enable_osd) {
 		nlohmann::json osd_config;
@@ -812,7 +1298,8 @@ int main(int argc, char **argv)
 	}
 
 	////////////////////////////////////////////// MAIN LOOP
-    read_gstreamerpipe_stream((void**)packet, listen_port, codec);
+	read_stream((void**)packet, listen_port, codec);
+	//read_gstreamerpipe_stream((void**)packet, listen_port, codec);
 
 	////////////////////////////////////////////// MPI CLEANUP
 

@@ -23,11 +23,13 @@ set(SOURCE_FILES
         src/main.h
         src/scheduling_helper.hpp
         src/gstrtpreceiver.cpp
-        src/gstrtpreceiver.h)
+        src/gstrtpreceiver.h
+        src/rtp_h26x.c)
 file(GLOB ICONS src/icons/*.png)
 file(GLOB OSD_CONFIGS *_osd.json)
 
 include_directories("/usr/include/libdrm" "/usr/include/cairo" "/usr/include/spdlog")
+#include_directories("/usr/include/libdrm" "/usr/include/cairo" "/usr/include/spdlog" "/opt/livemedia/include/BasicUsageEnvironment" "/opt/livemedia/include/liveMedia" "/opt/livemedia/include/groupsock" "/opt/livemedia/include/UsageEnvironment")
 
 configure_file("${PROJECT_NAME}_config.h.in" "${PROJECT_NAME}_config.h")
 
@@ -45,18 +47,29 @@ pkg_search_module(GST REQUIRED
 )
 pkg_search_module(gstreamer REQUIRED IMPORTED_TARGET gstreamer-1.0>=1.4)
 pkg_search_module(gstreamer-app REQUIRED IMPORTED_TARGET gstreamer-app-1.0>=1.4)
-target_link_libraries(${PROJECT_NAME} PkgConfig::gstreamer PkgConfig::gstreamer-app)
+target_link_libraries(${PROJECT_NAME} -Wl,--copy-dt-needed-entries PkgConfig::gstreamer PkgConfig::gstreamer-app  -lavformat)
+
+# Set default build type to Debug if not specified
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
 
 if(CMAKE_BUILD_TYPE MATCHES "Debug")
   add_compile_definitions(SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-  set(
-    CMAKE_C_FLAGS
-    "${CMAKE_C_FLAGS} -Werror -fsanitize=undefined -fsanitize=address"
-  )
-  target_link_options(${PROJECT_NAME}
-    BEFORE PUBLIC -fsanitize=undefined PUBLIC -fsanitize=address
-  )
+  
+  
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   -g")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -g")
+  
+  #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -fsanitize=undefined -fsanitize=address -g")
+  #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fsanitize=address -g")
+  #target_link_options(${PROJECT_NAME}
+  #  BEFORE PUBLIC -fsanitize=undefined PUBLIC -fsanitize=address
+  #)
+else()
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2")
 endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_BINARY_DIR}")
