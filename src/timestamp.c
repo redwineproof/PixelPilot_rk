@@ -52,6 +52,7 @@ typedef struct {
     unsigned long long frame_decoded_timestamp;
     unsigned long long frame_displayed_timestamp;
     unsigned long long vsync_timestamp;
+    unsigned long frame_size;
 } ground_timestamp_buffer_t;
 
 typedef struct {
@@ -69,10 +70,11 @@ typedef struct {
 
 static air_ground_timestamp_buffers_t ts_buffers;
 
-void record_nalu_rcv_ts(unsigned long long recv_begin_ts, unsigned long frameNb) {
+void record_frame_rcv_ts(unsigned long long recv_begin_ts, unsigned long frameNb, unsigned long frame_size) {
     unsigned long long ts = get_time_ns();
     ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.rcv_begin_timestamp = recv_begin_ts;
     ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.nal_rcvd_timestamp = ts;
+    ts_buffers.buffer[frameNb % K_TS_BUFFER_SIZE].ground.frame_size = frame_size;
 }
 
 void record_frame_decoded_ts(unsigned long frameNb) {
@@ -99,14 +101,15 @@ void record_vsync_ts(void) {
 #ifdef DEBUG
     fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n",
             (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000);
-    fprintf(stdout, "S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu\n",
+    fprintf(stdout, "S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu, Size: %i\n",
             (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000,
             (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000,
             (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000,
             (((long long)buf->ground.nal_rcvd_timestamp) - ((long long)buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000,
             (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000,
             (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
-            (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000);
+            (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
+            buf->ground.frame_size);
 #endif
 }
 

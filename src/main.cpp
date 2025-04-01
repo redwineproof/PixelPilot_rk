@@ -549,7 +549,8 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 						pts / 1000
 					);*/
 
-					record_nalu_rcv_ts(pts, frameNb);
+					/* assume 1 NALU per frame, SPS/VPS are not decoded and thereforea are not taken into account in latency display */
+					record_frame_rcv_ts(pts, frameNb, nalu_size);
 					feed_packet_to_decoder(packet, g_nalu, nalu_size, frameNb);
 
 					bytes_received += nalu_size;
