@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <errno.h>
+#include <stdbool.h>
 
 #include "time_util.h"
 
@@ -58,6 +59,8 @@ typedef struct {
 typedef struct {
     unsigned long long        air_time_ns;
     unsigned long long        ground_time_ns;
+    bool                      air_received;
+    bool                      air_synced;
     air_timestamp_buffer_t    air;
     ground_timestamp_buffer_t ground;
 } air_ground_timestamp_buffer_t;
@@ -99,18 +102,38 @@ void record_vsync_ts(void) {
     long long adjust_air_to_ground = buf->ground_time_ns - buf->air_time_ns - buf->air.one_way_delay_ns;
 
 #ifdef DEBUG
-    fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n",
-            (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000);
-    fprintf(stdout, "S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu, Size: %i\n",
-            (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000,
-            (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000,
-            (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000,
-            (((long long)buf->ground.nal_rcvd_timestamp) - ((long long)buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000,
-            (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000,
-            (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
-            (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
-            buf->ground.frame_size);
+    if (buf->air_received)
+    {
+        fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n",
+                (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000);
+        fprintf(stdout, "Nb: %i, S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu, Size: %i, Status: %s\n",
+                frame_counter,
+                (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000,
+                (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000,
+                (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000,
+                (((long long)buf->ground.nal_rcvd_timestamp) - ((long long)buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000,
+                (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000,
+                (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
+                (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
+                buf->ground.frame_size,
+                buf->air_synced == true ? "Synced": "Not synced");
+    }
+    else
+    {
+        fprintf(stdout, "Frame Rcv to Screen Vsync:     %llu us\n",
+            (buf->ground.vsync_timestamp - buf->ground.nal_rcvd_timestamp) / 1000);
+        fprintf(stdout, "Nb: %i, D:%llu F:%llu V:%llu, Size: %i\n",
+                frame_counter,
+                (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000,
+                (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
+                (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
+                buf->ground.frame_size);
+    }
 #endif
+
+    // reset validity
+    buf->air_received = false;
+    buf->air_synced = false;
 }
 
 
@@ -191,6 +214,14 @@ void *ground_thread_func(void *arg) {
 					memcpy(&ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air, &air_timestamps, sizeof(air_timestamp_buffer_t));
 					ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_time_ns = air_time_ns;
 					ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].ground_time_ns = ground_time_ns;
+
+
+                    // set validity
+                    ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_received = true;
+                    if (air_timestamps.one_way_delay_ns)
+                    {
+                        ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_synced = true;
+                    }
 
 					/*
 					fprintf(stdout, "FrameNb: %i Air: %llu, Delay: %llu, Venc: %llu, Ground: %llu\n", 
