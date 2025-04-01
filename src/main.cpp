@@ -90,19 +90,6 @@ bool osd_custom_message = false;
 VideoCodec codec = VideoCodec::H265;
 Dvr *dvr = NULL;
 
-
-typedef struct {
-	bool start;
-	double gst_time_ms[MAX_FRAMES];
-	double display_time_ms[MAX_FRAMES];
-	long frame_size[MAX_FRAMES];
-	int gst_frame_count;
-	int display_frame_count;
-} t_latency_stats;
-
-t_latency_stats stats;
-
-
 void init_buffer(MppFrame frame) {
 	output_list->video_frm_width = mpp_frame_get_width(frame);
 	output_list->video_frm_height = mpp_frame_get_height(frame);
@@ -158,7 +145,6 @@ void init_buffer(MppFrame frame) {
 		info.type = MPP_BUFFER_TYPE_DRM;
 		info.size = dmcd.width*dmcd.height;
 		info.fd = dph.fd;
-		info.index = i;
 		ret = mpp_buffer_commit(mpi.frm_grp, &info);
 		assert(!ret);
 		mpi.frame_to_drm[i].prime_fd = info.fd; // dups fd						
@@ -193,16 +179,7 @@ void init_buffer(MppFrame frame) {
 	if (dvr != NULL){
 		dvr->set_video_params(output_list->video_frm_width, output_list->video_frm_height, codec);
 	}
-	// stats setup 
-	stats.start = false;
-	stats.gst_frame_count = 0;
-	stats.display_frame_count = 0;
 }
-
-double timespec_to_ms(struct timespec& ts) {
-    return (ts.tv_sec + ts.tv_nsec / 1e9) * 1000;
-}
-
 
 // __FRAME_THREAD__
 //
@@ -244,7 +221,6 @@ void *__FRAME_THREAD__(void *param)
 					MppBufferInfo info;
 					ret = mpp_buffer_info_get(buffer, &info);
 					assert(!ret);
-
 					for (i=0; i<MAX_FRAMES; i++) {
 						if (mpi.frame_to_drm[i].prime_fd == info.fd) break;
 					}
@@ -276,7 +252,6 @@ void *__FRAME_THREAD__(void *param)
 }
 
 uint64_t rcv_pts;
-
 
 void *__DISPLAY_THREAD__(void *param)
 {
@@ -431,13 +406,7 @@ void sigusr1_handler(int signum) {
 
 int decoder_stalled_count=0;
 bool feed_packet_to_decoder(MppPacket *packet,void* data_p,int data_len, uint64_t pts){
-    
-	/*
-	fprintf(stdout, "frame decoder hdr1: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[0], ((uint8_t*) data_p)[1], ((uint8_t*) data_p)[2], ((uint8_t*) data_p)[3], ((uint8_t*) data_p)[4], ((uint8_t*) data_p)[5], ((uint8_t*) data_p)[6], ((uint8_t*) data_p)[7]);
-	fprintf(stdout, "frame decoder hdr2: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[8], ((uint8_t*) data_p)[9], ((uint8_t*) data_p)[10], ((uint8_t*) data_p)[11], ((uint8_t*) data_p)[12], ((uint8_t*) data_p)[13], ((uint8_t*) data_p)[14], ((uint8_t*) data_p)[15]);
-	fprintf(stdout, "frame decoder hdr3: %02X %02X %02X %02X %02X %02X %02X %02X\n", ((uint8_t*) data_p)[16], ((uint8_t*) data_p)[17], ((uint8_t*) data_p)[18], ((uint8_t*) data_p)[19], ((uint8_t*) data_p)[20], ((uint8_t*) data_p)[21], ((uint8_t*) data_p)[22], ((uint8_t*) data_p)[23]);
-	*/
-	mpp_packet_set_data(packet, data_p);
+    mpp_packet_set_data(packet, data_p);
     mpp_packet_set_size(packet, data_len);
     mpp_packet_set_pos(packet, data_p);
     mpp_packet_set_length(packet, data_len);
@@ -615,15 +584,12 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
     auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
         // Let the gst pull thread run at quite high priority
         static bool first= false;
-		if(first){
+        if(first){
             SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
             first= false;
         }
 		bytes_received += frame->size();
 		uint64_t now = get_time_ms();
-
-        printNaluJitter(now, frame->size());
-
 		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
 		if ((now-period_start) >= 1000) {
 			period_start = now;
@@ -631,13 +597,10 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoC
 			osd_vars.bw_stats[osd_vars.bw_curr] = bytes_received ;
 			bytes_received = 0;
 		}
-        feed_packet_to_decoder(packet,frame->data(),frame->size(), now);
+        feed_packet_to_decoder(packet,frame->data(),frame->size(), 0);
         if (dvr_enabled && dvr != NULL) {
 			dvr->frame(frame);
         }
-
-
-
     };
     receiver.start_receiving(cb);
     while (!signal_flag){

@@ -18,7 +18,6 @@ enum class VideoCodec {
     H265
 };
 
-
 static VideoCodec video_codec(const char * str) {
     if (!strcmp(str, "h264")) {
         return VideoCodec::H264;

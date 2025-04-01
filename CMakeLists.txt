@@ -30,7 +30,6 @@ file(GLOB ICONS src/icons/*.png)
 file(GLOB OSD_CONFIGS *_osd.json)
 
 include_directories("/usr/include/libdrm" "/usr/include/cairo" "/usr/include/spdlog")
-#include_directories("/usr/include/libdrm" "/usr/include/cairo" "/usr/include/spdlog" "/opt/livemedia/include/BasicUsageEnvironment" "/opt/livemedia/include/liveMedia" "/opt/livemedia/include/groupsock" "/opt/livemedia/include/UsageEnvironment")
 
 configure_file("${PROJECT_NAME}_config.h.in" "${PROJECT_NAME}_config.h")
 
@@ -48,7 +47,7 @@ pkg_search_module(GST REQUIRED
 )
 pkg_search_module(gstreamer REQUIRED IMPORTED_TARGET gstreamer-1.0>=1.4)
 pkg_search_module(gstreamer-app REQUIRED IMPORTED_TARGET gstreamer-app-1.0>=1.4)
-target_link_libraries(${PROJECT_NAME} -Wl,--copy-dt-needed-entries PkgConfig::gstreamer PkgConfig::gstreamer-app  -lavformat)
+target_link_libraries(${PROJECT_NAME} PkgConfig::gstreamer PkgConfig::gstreamer-app)
 
 # Set default build type to Debug if not specified
 if(NOT CMAKE_BUILD_TYPE)
