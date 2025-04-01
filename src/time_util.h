@@ -14,7 +14,7 @@
 /**
  * @return milliseconds
  */
-uint64_t get_time_ms() {
+static uint64_t get_time_ms() {
     struct timespec spec;
     if (clock_gettime(1, &spec) == -1) { /* 1 is CLOCK_MONOTONIC */
         abort();
@@ -22,7 +22,7 @@ uint64_t get_time_ms() {
     return spec.tv_sec * 1000 + spec.tv_nsec / 1e6;
 }
 
-uint64_t get_time_ns() {
+static uint64_t get_time_ns() {
     struct timespec spec;
     if (clock_gettime(1, &spec) == -1) { /* 1 is CLOCK_MONOTONIC */
         abort();
@@ -31,7 +31,7 @@ uint64_t get_time_ns() {
 }
 
 
-void print_time_ms(const char* tag,uint64_t ms){
+static void print_time_ms(const char* tag,uint64_t ms){
     printf("%s %dms\n",tag,(int)ms);
 }
 
@@ -46,7 +46,7 @@ struct TSAccumulator{
 };
 
 
-void accumulate_and_print(const char *tag,uint64_t ms,struct TSAccumulator* tsAccumulator){
+static void accumulate_and_print(const char *tag,uint64_t ms,struct TSAccumulator* tsAccumulator){
     if(ms>tsAccumulator->max_ms){
         tsAccumulator->max_ms=ms;
     }
