@@ -17,6 +17,7 @@
 #define GROUND_PORT 12345 // Port du système "ground"
 #define PERIOD_MS 1000    // Période en millisecondes
 #define TIMEOUT_US 100000 // Timeout en microsecondes
+#define PACKET_MAGIC 0xA1B2C3D4
 
 static int sockfd = -1;
 
@@ -70,6 +71,19 @@ typedef struct {
     unsigned long frame_counter;
 } air_ground_timestamp_buffers_t;
 
+typedef enum {
+    PACKET_TYPE_AIR_TIME,
+    PACKET_TYPE_AIR_TIMESTAMPS
+} packet_type_t;
+
+typedef struct {
+    uint32_t magic; // Magic number for validation
+    packet_type_t type;
+    union {
+        uint64_t air_time_ns;
+        air_timestamp_buffer_t air_timestamps;
+    } data;
+} air_packet_t;
 
 static air_ground_timestamp_buffers_t ts_buffers;
 
@@ -136,7 +150,6 @@ void record_vsync_ts(void) {
     buf->air_synced = false;
 }
 
-
 #define DEBUG
 
 extern int signal_flag;
@@ -149,7 +162,9 @@ void *ground_thread_func(void *arg) {
 	unsigned long long air_time_ns;
 	unsigned long long ground_time_ns;
 	unsigned long long ground_time_ns_network;
-	air_timestamp_buffer_t air_timestamps;
+	air_packet_t air_packet;
+    packet_type_t type;
+    uint32_t magic;
 
 	// Recevoir le temps "air" avec timeout
 	struct timeval timeout;
@@ -159,82 +174,66 @@ void *ground_thread_func(void *arg) {
 
     while (!signal_flag) {
 
-	#if 1
-		if (recvfrom(sockfd, &air_time_ns, sizeof(air_time_ns), 0, (struct sockaddr *)&air_addr, &addr_len) < 0) {
+		if (recvfrom(sockfd, &air_packet, sizeof(air_packet), 0, (struct sockaddr *)&air_addr, &addr_len) < 0) {
 			if (errno == EWOULDBLOCK || errno == EAGAIN) {
-				printf("Receive timeout\n");
+				fprintf(stderr, "Receive timeout\n");
 			} else {
 				perror("Failed to receive data");
 			}
 		}
 		else
 		{
-			air_time_ns = ntohll(air_time_ns);
-			// Capturer le temps "ground"
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			ground_time_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-		
-			// Envoyer le temps "ground" au système "air"
-			ground_time_ns_network = htonll(ground_time_ns);
-			if (sendto(sockfd, &ground_time_ns_network, sizeof(ground_time_ns_network), 0, (struct sockaddr *)&air_addr, addr_len) < 0) {
-				perror("Failed to send data");
+            // Validate the magic number
+            magic = ntohl(air_packet.magic);
+            //fprintf(stdout, "Magic: %x\n", magic);
+            if (magic != PACKET_MAGIC) {
+                fprintf(stderr, "Invalid packet received. Ignoring.\n");
+                continue;
+            }
+
+            type = ntohl(air_packet.type);
+			if (type == PACKET_TYPE_AIR_TIME) {
+				air_time_ns = ntohll(air_packet.data.air_time_ns);
+				// Capturer le temps "ground"
+				clock_gettime(CLOCK_MONOTONIC, &ts);
+				ground_time_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+			
+				// Envoyer le temps "ground" au système "air"
+				ground_time_ns_network = htonll(ground_time_ns);
+				if (sendto(sockfd, &ground_time_ns_network, sizeof(ground_time_ns_network), 0, (struct sockaddr *)&air_addr, addr_len) < 0) {
+					perror("Failed to send data");
+				}
 			}
-			else
-			{
-		
-			#ifdef DEBUG
-				//printf("Received air time: %llu us\n", air_time_ns / 1000);
-				//printf("Ground time: %llu us\n", ground_time_ns / 1000);
-			#endif
-				if (recvfrom(sockfd, &air_timestamps, sizeof(air_timestamps), 0, (struct sockaddr *)&air_addr, &addr_len) < 0) {
-					if (errno == EWOULDBLOCK || errno == EAGAIN) {
-						printf("Receive timeout\n");
-					} else {
-						perror("Failed to receive data");
-					}
+			else if (type == PACKET_TYPE_AIR_TIMESTAMPS) {
+				air_timestamp_buffer_t *air_timestamps = &air_packet.data.air_timestamps;
+				// Convertir les champs en host byte order
+				unsigned long frameNb = air_timestamps->frameNb;
+				air_timestamps->frameNb = ntohl(air_timestamps->frameNb);
+				air_timestamps->vsync_timestamp = ntohll(air_timestamps->vsync_timestamp);
+				air_timestamps->framestart_timestamp = ntohll(air_timestamps->framestart_timestamp);
+				air_timestamps->frameend_timestamp = ntohll(air_timestamps->frameend_timestamp);
+				air_timestamps->ispframedone_timestamp = ntohll(air_timestamps->ispframedone_timestamp);
+				air_timestamps->vencdone_timestamp = ntohll(air_timestamps->vencdone_timestamp);
+				air_timestamps->one_way_delay_ns = ntohll(air_timestamps->one_way_delay_ns);
+
+				// store it
+				memcpy(&ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air, air_timestamps, sizeof(air_timestamp_buffer_t));
+				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_time_ns = air_time_ns;
+				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].ground_time_ns = ground_time_ns;
+
+				// set validity
+				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_received = true;
+				if (air_timestamps->one_way_delay_ns) {
+					ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_synced = true;
 				}
-				else
-				{
-					// Convertir les champs en host byte order
-					air_timestamps.frameNb = ntohl(air_timestamps.frameNb);
-					air_timestamps.vsync_timestamp = ntohll(air_timestamps.vsync_timestamp);
-					air_timestamps.framestart_timestamp = ntohll(air_timestamps.framestart_timestamp);
-					air_timestamps.frameend_timestamp = ntohll(air_timestamps.frameend_timestamp);
-					air_timestamps.ispframedone_timestamp = ntohll(air_timestamps.ispframedone_timestamp);
-					air_timestamps.vencdone_timestamp = ntohll(air_timestamps.vencdone_timestamp);
-					air_timestamps.one_way_delay_ns = ntohll(air_timestamps.one_way_delay_ns);
-
-					// store it
-					//fprintf(stdout, "Packet rcv %lu =>\n", air_timestamps.frameNb);
-					//fprintf(stdout, "AirTime:                %llu us\n", air_time_ns / 1000);
-					//fprintf(stdout, "GroundTime:             %llu us\n", ground_time_ns / 1000);
-					//fprintf(stdout, "Venc Done:              %llu us\n", air_timestamps.vencdone_timestamp / 1000);
-					//fprintf(stdout, "Air One Way Delay:      %llu us\n", air_timestamps.one_way_delay_ns / 1000);
-
-					memcpy(&ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air, &air_timestamps, sizeof(air_timestamp_buffer_t));
-					ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_time_ns = air_time_ns;
-					ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].ground_time_ns = ground_time_ns;
-
-
-                    // set validity
-                    ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_received = true;
-                    if (air_timestamps.one_way_delay_ns)
-                    {
-                        ts_buffers.buffer[air_timestamps.frameNb % K_TS_BUFFER_SIZE].air_synced = true;
-                    }
-
-					/*
-					fprintf(stdout, "FrameNb: %i Air: %llu, Delay: %llu, Venc: %llu, Ground: %llu\n", 
-						air_timestamps.frameNb,
-						air_time_ns,
-						air_timestamps.one_way_delay_ns,
-						air_timestamps.vencdone_timestamp,
-						ground_time_ns
-					);*/
-				}
+			}
+			else {
+				// Reset to "receive air_time" state
+				fprintf(stderr, "Invalid packet type received. Resetting to receive air_time state.\n");
+				continue;
 			}
 		}
-	#endif
+
     }
     return NULL;
 }
@@ -280,4 +279,3 @@ int timestamp_exit(void)
     close(sockfd);
 	return 0;
 }
-
