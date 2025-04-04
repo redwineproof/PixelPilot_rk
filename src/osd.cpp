@@ -2,7 +2,6 @@
 extern "C" {
 #include "drm.h"
 #include "mavlink.h"
-#include "icons/icons.h"
 }
 #include "osd.h"
 #include "osd.hpp"
@@ -33,9 +32,9 @@ extern "C" {
 
 using json = nlohmann::json;
 
-struct osd_vars osd_vars;
 int enable_osd = 0;
-
+int osd_zpos = 2;
+extern uint32_t refresh_frequency_ms;
 extern uint32_t frames_received;
 uint32_t stats_rx_bytes = 0;
 struct timespec last_timestamp = {0, 0};
@@ -43,6 +42,9 @@ float rx_rate = 0;
 int hours = 0, minutes = 0, seconds = 0, milliseconds = 0;
 char custom_msg[80];
 u_int custom_msg_refresh_count = 0;
+extern pthread_mutex_t video_mutex;
+extern pthread_cond_t video_cond;
+bool osd_update_ready = false;
 
 
 double getTimeInterval(struct timespec* timestamp, struct timespec* last_meansure_timestamp) {
@@ -950,6 +952,152 @@ public:
 	}
 };
 
+class ExternalSurfaceWidget: public Widget {
+public:
+	ExternalSurfaceWidget(int pos_x, int pos_y, std::string shm_name ): Widget(pos_x, pos_y), shm_name(shm_name)  {};
+
+	virtual void init_shm(cairo_t *cr) {
+		SPDLOG_INFO("creating shm region {}", shm_name);
+
+		cairo_surface_t *target = cairo_get_target(cr);
+		int width = cairo_image_surface_get_width(target);
+		int height = cairo_image_surface_get_height(target);
+
+		// Calculate total shared memory size
+		shm_size = sizeof(SharedMemoryRegion) + (width * height * 4); // Metadata + Image data
+
+		// Create shared memory region
+		int shm_fd = shm_open(shm_name.c_str(), O_CREAT | O_RDWR, 0666);
+		if (shm_fd == -1) {
+			perror("Failed to create shared memory");
+			return;
+		}
+
+		if (ftruncate(shm_fd, shm_size) == -1) {
+			perror("Failed to set shared memory size");
+			shm_unlink(shm_name.c_str());
+			return;
+		}
+
+		// Map shared memory to process address space
+		auto *shm_region = static_cast<SharedMemoryRegion*>(
+			mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0)
+		);
+		if (shm_region == MAP_FAILED) {
+			perror("Failed to map shared memory");
+			shm_unlink(shm_name.c_str());
+			return;
+		}
+
+		// Write metadata
+		shm_region->width = width;
+		shm_region->height = height;
+
+		// Create Cairo surface for the image data
+		shm_surface = cairo_image_surface_create_for_data(
+			shm_region->data, CAIRO_FORMAT_ARGB32, width, height, width * 4
+		);
+
+		// Store pointer for cleanup
+		shm_data = reinterpret_cast<unsigned char*>(shm_region);
+	}
+
+
+	virtual void draw(cairo_t *cr) {
+
+		if (! shm_surface) 
+			init_shm(cr);
+		auto [x, y] = xy(cr);
+		cairo_set_source_surface(cr, shm_surface, x, y); // Position at (0, 0)
+    	cairo_paint(cr); // Paint shm_surface onto base_surface
+	}
+
+	~ExternalSurfaceWidget() {
+		SPDLOG_INFO("bye, bye, shm region {}", shm_name);
+		if (shm_surface) {
+			cairo_surface_destroy(shm_surface);
+		}
+		if (shm_data) {
+			munmap(shm_data, shm_size);
+		}
+		shm_unlink(shm_name.c_str());
+	}
+
+protected:
+	cairo_surface_t *shm_surface = nullptr;
+	unsigned char *shm_data = nullptr;
+	size_t shm_size;
+	std::string shm_name;
+};
+
+class IconSelectorWidget : public Widget {
+public:
+    IconSelectorWidget(int pos_x, int pos_y, const std::vector<std::pair<std::pair<int, int>, std::filesystem::path>>& ranges_and_icons, const std::filesystem::path& assets_dir)
+        : Widget(pos_x, pos_y), assets_dir(assets_dir) {
+        args.push_back(Fact()); // Expect one fact as input
+
+        // Load and cache all icons during initialization
+        for (const auto& [range, icon_path] : ranges_and_icons) {
+            cairo_surface_t* icon = openIcon(icon_path);
+            if (icon) {
+                icon_cache[range] = icon;
+            }
+        }
+    }
+
+    virtual ~IconSelectorWidget() {
+        // Clean up cached icons
+        for (auto& [range, icon] : icon_cache) {
+            if (icon) {
+                cairo_surface_destroy(icon);
+            }
+        }
+    }
+
+    virtual void setFact(uint idx, Fact fact) override {
+        assert(idx == 0);
+        args[idx] = fact;
+        current_icon = selectIcon(fact);
+    }
+
+    virtual void draw(cairo_t *cr) override {
+        if (!current_icon) return;
+
+        auto [x, y] = xy(cr);
+        cairo_set_source_surface(cr, current_icon, x, y);
+        cairo_paint(cr);
+    }
+
+private:
+    cairo_surface_t* selectIcon(Fact& fact) {
+        if (!fact.isDefined()) return nullptr;
+
+        long value = fact.getIntValue(); // Assuming the fact is of type T_INT
+
+        // Iterate through the configured ranges and select the appropriate icon
+        for (const auto& [range, icon] : icon_cache) {
+            if (value >= range.first && value <= range.second) {
+                return icon;
+            }
+        }
+
+        return nullptr; // No icon selected
+    }
+
+    cairo_surface_t* openIcon(const std::filesystem::path& icon_path) {
+        std::filesystem::path full_path = assets_dir / icon_path;
+        cairo_surface_t* icon = cairo_image_surface_create_from_png(full_path.c_str());
+        if (cairo_surface_status(icon) != CAIRO_STATUS_SUCCESS) {
+            spdlog::error("Failed to open icon: {}", full_path.string());
+            return nullptr;
+        }
+        return icon;
+    }
+
+    std::map<std::pair<int, int>, cairo_surface_t*> icon_cache; // Cache of loaded icons
+    std::filesystem::path assets_dir;
+    cairo_surface_t* current_icon = nullptr; // Currently selected icon
+};
 
 class Osd {
 public:
@@ -993,6 +1141,18 @@ public:
 			if (type == "TextWidget") {
 				addWidget(new TextWidget(x, y, widget_j.at("text").template get<std::string>()),
 						  matchers);
+			}
+			else if (type == "ExternalSurfaceWidget") {
+				addWidget(new ExternalSurfaceWidget(x, y, name), matchers);
+			} else if (type == "IconSelectorWidget") {
+				std::vector<std::pair<std::pair<int, int>, std::filesystem::path>> ranges_and_icons;
+				for (const auto& range_icon : widget_j.at("ranges_and_icons")) {
+					int range_start = range_icon.at("range")[0];
+					int range_end = range_icon.at("range")[1];
+					std::filesystem::path icon_path = range_icon.at("icon_path");
+					ranges_and_icons.push_back({{range_start, range_end}, icon_path});
+				}
+				addWidget(new IconSelectorWidget(x, y, ranges_and_icons, assets_dir), matchers);
 			} else if (type == "TplTextWidget") {
 				auto tpl = widget_j.at("template").template get<std::string>();
 				addWidget(new TplTextWidget(x, y, tpl, (uint)matchers.size()), matchers);
@@ -1152,13 +1312,6 @@ private:
 std::queue<Fact> fact_queue;
 std::mutex mtx;
 std::condition_variable cv;
-
-
-cairo_surface_t *fps_icon;
-cairo_surface_t *lat_icon;
-cairo_surface_t* net_icon;
-cairo_surface_t* sdcard_icon;
-
 pthread_mutex_t osd_mutex;
 
 void modeset_paint_buffer(struct modeset_buf *buf, Osd *osd) {
@@ -1214,241 +1367,9 @@ void modeset_paint_buffer(struct modeset_buf *buf, Osd *osd) {
 
 	osd->draw(cr);
 
-	if (osd_vars.enable_video || osd_vars.enable_wfbng ) {
-		// stats height
-		int stats_top_margin = 5;
-		int stats_row_height = 33;
-		int stats_height = 30;
-		int row_count = 0;
-		if (osd_vars.enable_recording) {
-			stats_height+=stats_row_height;
-		}
-		if (osd_vars.enable_video) {
-			stats_height+=stats_row_height*2;
-			if (osd_vars.enable_latency) {
-				stats_height+=stats_row_height;
-			}
-		}
-		if (osd_vars.enable_wfbng) {
-			stats_height+=stats_row_height;
-		} 
-
-		cairo_set_source_rgba(cr, 0, 0, 0, 0.4); // R, G, B, A
-		cairo_rectangle(cr, osd_x, 0, 300, stats_height); 
-		cairo_fill(cr);
-		
-
-		if (osd_vars.enable_video) {
-			row_count++;
-			cairo_set_source_surface (cr, fps_icon, osd_x+22, stats_top_margin+stats_row_height-19);
-			cairo_paint(cr);
-			cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-			cairo_move_to (cr,osd_x+60, stats_top_margin+stats_row_height);
-			sprintf(msg, "%d fps | %dx%d", osd_vars.current_framerate, osd_vars.video_width, osd_vars.video_height);
-			cairo_show_text (cr, msg);
-
-			if (osd_vars.enable_latency) {
-				row_count++;
-				cairo_set_source_surface (cr, lat_icon, osd_x+22, stats_top_margin+row_count*stats_row_height-19);
-				cairo_paint (cr);
-				cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-				cairo_move_to (cr,osd_x+60, stats_top_margin+stats_row_height*2);
-				sprintf(msg, "%.2f ms (%.f, %.f)", osd_vars.latency_avg, osd_vars.latency_min, osd_vars.latency_max);
-				cairo_show_text (cr, msg);
-			}
-			
-			// Video Link Elements
-			double avg_bw = 0;
-			int avg_cnt = 0;
-			for (int i = osd_vars.bw_curr; i<(osd_vars.bw_curr+10); ++i) {
-				int h = osd_vars.bw_stats[i%10]/10000 * 1.2;
-				if (h<0) {
-					h = 0;
-				}
-				if (osd_vars.bw_stats[i%10]>0) {
-					avg_bw += osd_vars.bw_stats[i%10];
-					avg_cnt++;
-				}
-			}
-			avg_bw = avg_bw / avg_cnt;
-			if (avg_bw < 1000) {
-				sprintf(msg, "%.2f Kbps", avg_bw / 125 );
-			} else {
-				sprintf(msg, "%.2f Mbps", avg_bw / 125000 );
-			}
-			row_count++;
-			cairo_set_source_surface (cr, net_icon, osd_x+22, stats_top_margin+row_count*stats_row_height-19);
-			cairo_paint (cr);
-			cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-			cairo_move_to (cr, osd_x+60, stats_top_margin+stats_row_height*row_count);
-			cairo_show_text (cr, msg);
-		}
-
-		// WFB-ng Elements
-		if (osd_vars.enable_wfbng) {
-			cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-			sprintf(msg, "WFB %3d F%d L%d", osd_vars.wfb_rssi, osd_vars.wfb_fec_fixed, osd_vars.wfb_errors);
-			// //TODO (gehee) Only getting WFB_LINK_LOST when testing.
-			// if (osd_vars.wfb_flags & WFB_LINK_LOST) {
-			// 		sprintf(msg, "%s (LOST)", msg);
-			// } else if (osd_vars.wfb_flags & WFB_LINK_JAMMED) {
-			// 		sprintf(msg, "%s (JAMMED)", msg);
-			// }
-			row_count++;
-			cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-			cairo_move_to(cr, osd_x+25, stats_top_margin+stats_row_height*row_count);
-			cairo_show_text(cr, msg);
-		}
-
-		// Recording
-		if (osd_vars.enable_recording) {
-			
-			// Sets the source pattern within cr to a translucent color. This color will then be used for any subsequent drawing operation until a new source pattern is set.
-			// did not change anything
-			cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-			sprintf(msg, "Recording");
-						
-			row_count++;
-			// This is a convenience function for creating a pattern from surface and setting it as the source in cr with cairo_set_source().
-			// if when we have an icon
-			cairo_set_source_surface (cr, sdcard_icon, osd_x+22, stats_top_margin+row_count*stats_row_height-19);
-			cairo_paint (cr);
-
-			// // set to red font
-			cairo_set_source_rgba (cr, 255.0, 0.0, 0.0, 1);
-
-			// Begin a new sub-path. After this call the current point will be (x, y)
-			cairo_move_to (cr, osd_x+60, stats_top_margin+stats_row_height*row_count);
-			cairo_show_text (cr, msg);
-		}
-	}
-
-	//display custom message
-	if (osd_custom_message && custom_msg_refresh_count > 0) {
-		if (custom_msg_refresh_count++ > 5) custom_msg_refresh_count=0;
-
-		// Measure the text width
-		cairo_text_extents_t extents;
-		cairo_text_extents(cr, custom_msg, &extents);
-
-		// Calculate the position to center the text horizontally
-		double x = (buf->width / 2) - (extents.width / 2);
-		double y = (buf->height / 2);
-
-		// Set the position and draw the text
-		cairo_move_to(cr, x, y);
-		cairo_show_text(cr, custom_msg);
-	}	
-
-	if (!osd_vars.enable_telemetry){
-		return;
-	}
-
-	cairo_set_source_rgba (cr, 255.0, 255.0, 255.0, 1);
-	// Mavlink elements
-	uint32_t x_center = buf->width / 2;
-	if (osd_vars.telemetry_level > 1){
-		// OSD telemetry
-		sprintf(msg, "ALT:%.00fM", osd_vars.telemetry_altitude);
-		cairo_move_to(cr, x_center + (20) + 260, buf->height / 2 - 8);
-		cairo_show_text(cr, msg);
-		sprintf(msg, "SPD:%.00fKM/H", osd_vars.telemetry_gspeed);
-		cairo_move_to(cr, x_center - (16 * 3) - 360, buf->height / 2 - 8);
-		cairo_show_text(cr, msg);
-		sprintf(msg, "VSPD:%.00fM/S", osd_vars.telemetry_vspeed);
-		cairo_move_to(cr, x_center + (20) + 260, buf->height / 2 + 22);
-		cairo_show_text(cr, msg);
-	}
-
-    sprintf(msg, "BAT:%.02fV", osd_vars.telemetry_battery / 1000);
-    cairo_move_to(cr, 40, buf->height - 30);
-    cairo_show_text(cr, msg);
-    sprintf(msg, "CONS:%.00fmAh", osd_vars.telemetry_current_consumed);
-    cairo_move_to(cr, 40, buf->height - 60);
-    cairo_show_text(cr, msg);
-    sprintf(msg, "CUR:%.02fA", osd_vars.telemetry_current / 100);
-    cairo_move_to(cr, 40, buf->height - 90);
-    cairo_show_text(cr, msg);
-    sprintf(msg, "THR:%.00f%%", osd_vars.telemetry_throttle);
-    cairo_move_to(cr, 40, buf->height - 120);
-    cairo_show_text(cr, msg);
-    sprintf(msg, "TEMP:%.00fC", osd_vars.telemetry_raw_imu/100);
-    cairo_move_to(cr, 40, buf->height - 150);
-    cairo_show_text(cr, msg);
-    
-	if (osd_vars.telemetry_level > 1){
-		sprintf(msg, "SATS:%.00f", osd_vars.telemetry_sats);
-		cairo_move_to(cr,buf->width - 140, buf->height - 30);
-		cairo_show_text(cr, msg);
-		sprintf(msg, "HDG:%.00f", osd_vars.telemetry_hdg);
-		cairo_move_to(cr,buf->width - 140, buf->height - 120);
-		cairo_show_text(cr, msg);
-		sprintf(osd_vars.c1, "%.00f", osd_vars.telemetry_lat);
-
-		if (osd_vars.telemetry_lat < 10000000) {
-			insertString(osd_vars.c1, "LAT:0.", 0);
-		}
-
-		if (osd_vars.telemetry_lat > 9999999) {
-			if (numOfChars(osd_vars.c1) == 8) {
-				insertString(osd_vars.c1, ".", 1);
-			} else {
-				insertString(osd_vars.c1, ".", 2);
-			}
-			insertString(osd_vars.c1, "LAT:", 0);
-		}
-		cairo_move_to(cr, buf->width - 240, buf->height - 90);
-		cairo_show_text(cr,  osd_vars.c1);
-
-		sprintf(osd_vars.c2, "%.00f", osd_vars.telemetry_lon);
-		if (osd_vars.telemetry_lon < 10000000) {
-			insertString(osd_vars.c2, "LON:0.", 0);
-		}
-		if (osd_vars.telemetry_lon > 9999999) {
-			if (numOfChars(osd_vars.c2) == 8) {
-				insertString(osd_vars.c2, ".", 1);
-			} else {
-				insertString(osd_vars.c2, ".", 2);
-			}
-			insertString(osd_vars.c2, "LON:", 0);
-		}
-		cairo_move_to(cr, buf->width - 240, buf->height - 60);
-		cairo_show_text(cr,  osd_vars.c2);
-		sprintf(msg, "PITCH:%.00f", osd_vars.telemetry_pitch);
-		cairo_move_to(cr, x_center + 440, buf->height - 140);
-		sprintf(msg, "ROLL:%.00f", osd_vars.telemetry_roll);
-		cairo_move_to(cr, x_center + 440, buf->height - 170);
-		sprintf(msg, "DIST:%.03fM", osd_vars.telemetry_distance);
-		cairo_move_to(cr, x_center - 350, buf->height - 30);
-		cairo_show_text(cr, msg);
-	}
-    
-	sprintf(msg, "RSSI:%.00f", osd_vars.telemetry_rssi);
-	cairo_move_to(cr, x_center - 50, buf->height - 30);
-	cairo_show_text(cr,  msg);
-
-	struct timespec current_timestamp;
-	if (!clock_gettime(CLOCK_MONOTONIC_COARSE, &current_timestamp)) {
-		double interval = getTimeInterval(&current_timestamp, &last_timestamp);
-		if (osd_vars.telemetry_arm > 1700){
-			seconds = seconds + interval;
-		}
-	}
-
-	sprintf(msg, "TIME:%.2d:%.2d", minutes,seconds);
-	cairo_move_to(cr, buf->width - 300, buf->height - 90);
-	cairo_show_text(cr, msg);
-	if(seconds > 59){
-		seconds = 0;
-		++minutes;  
-	}
-	if(minutes > 59){
-		seconds = 0;
-		minutes = 0;
-	}
-
 	cairo_fill(cr);
 	cairo_destroy(cr);
+	cairo_surface_destroy(surface);
 }
 
 int osd_thread_signal;
@@ -1469,18 +1390,6 @@ cairo_status_t on_read_png_stream(png_closure_t * closure, unsigned char * data,
 	return CAIRO_STATUS_SUCCESS;
 }
 
-cairo_surface_t * surface_from_embedded_png(const char * png, size_t length)
-{
-	int rc = -1;
-	png_closure_t closure[1] = {{
-		.iter = (unsigned char *)png,
-		.bytes_left = (unsigned int)length,
-	}};
-	return cairo_image_surface_create_from_png_stream(
-		(cairo_read_func_t)on_read_png_stream,
-		closure);
-}
-
 void *__OSD_THREAD__(void *param) {
 	osd_thread_params *p = (osd_thread_params *)param;
 	Osd *osd = new Osd;
@@ -1489,23 +1398,18 @@ void *__OSD_THREAD__(void *param) {
 	osd->loadConfig(p->config);
 	auto last_display_at = std::chrono::steady_clock::now();
 
-	fps_icon = surface_from_embedded_png(framerate_icon, framerate_icon_length);
-	lat_icon = surface_from_embedded_png(latency_icon, latency_icon_length);
-	net_icon = surface_from_embedded_png(bandwidth_icon, bandwidth_icon_length);
-	sdcard_icon = surface_from_embedded_png(sdcard_white_icon, sdcard_white_icon_length);
-
 	int ret = pthread_mutex_init(&osd_mutex, NULL);
 	assert(!ret);
 
 	struct modeset_buf *buf = &p->out->osd_bufs[p->out->osd_buf_switch];
 	ret = modeset_perform_modeset(p->fd, p->out, p->out->osd_request, &p->out->osd_plane,
-								  buf->fb, buf->width, buf->height, osd_vars.plane_zpos);
+								  buf->fb, buf->width, buf->height, osd_zpos);
 	assert(ret >= 0);
 	while (!osd_thread_signal) {
 		std::unique_lock<std::mutex> lock(mtx);
 		std::vector<Fact> fact_buf;
 		auto since_last_display = std::chrono::steady_clock::now() - last_display_at;
-		auto wait = std::chrono::milliseconds(osd_vars.refresh_frequency_ms) - since_last_display;
+		auto wait = std::chrono::milliseconds(refresh_frequency_ms) - since_last_display;
 		bool got_fact = cv.wait_for(
 					lock,
 					wait,
@@ -1537,6 +1441,16 @@ void *__OSD_THREAD__(void *param) {
 			p->out->osd_buf_switch = buf_idx;
 			ret = pthread_mutex_unlock(&osd_mutex);
 			assert(!ret);
+
+			// tell the display thread that we have a update
+			ret = pthread_mutex_lock(&video_mutex);
+			assert(!ret);
+			osd_update_ready = true;
+			ret = pthread_cond_signal(&video_cond);
+			assert(!ret);
+			ret = pthread_mutex_unlock(&video_mutex);
+			assert(!ret);
+
 			last_display_at = std::chrono::steady_clock::now();
 		}
     }
@@ -1616,7 +1530,7 @@ void osd_add_double_fact(void *batch, char const *name, osd_tag *tags, int n_tag
 	facts->push_back(Fact(FactMeta(std::string(name), fact_tags), value));
 };
 
-void osd_add_str_fact(void *batch, char const *name, osd_tag *tags, int n_tags, char *value) {
+void osd_add_str_fact(void *batch, char const *name, osd_tag *tags, int n_tags, const char *value) {
 	std::vector<Fact> *facts = static_cast<std::vector<Fact> *>(batch);
 	FactTags fact_tags;
 	mk_tags(tags, n_tags, &fact_tags);
@@ -1650,7 +1564,7 @@ void osd_publish_double_fact(char const *name, osd_tag *tags, int n_tags, double
 	publish(Fact(FactMeta(std::string(name), fact_tags), value));
 };
 
-void osd_publish_str_fact(char const *name, osd_tag *tags, int n_tags, char *value) {
+void osd_publish_str_fact(char const *name, osd_tag *tags, int n_tags, const char *value) {
 	FactTags fact_tags;
 	mk_tags(tags, n_tags, &fact_tags);
 	publish(Fact(FactMeta(std::string(name), fact_tags), std::string(value)));
