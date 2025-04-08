@@ -265,8 +265,7 @@ void *__DISPLAY_THREAD__(void *param)
 		
 		ret = pthread_mutex_lock(&video_mutex);
 		assert(!ret);
-		//while (output_list->video_fb_id==0 && !osd_update_ready) {
-		while (output_list->video_fb_id==0) {
+		while (output_list->video_fb_id==0 && !osd_update_ready) {
 			pthread_cond_wait(&video_cond, &video_mutex);
 			assert(!ret);
 			if (output_list->video_fb_id == 0 && frm_eos) {
