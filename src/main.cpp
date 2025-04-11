@@ -252,7 +252,6 @@ void *__FRAME_THREAD__(void *param)
 	return nullptr;
 }
 
-uint64_t rcv_pts;
 
 void *__DISPLAY_THREAD__(void *param)
 {
@@ -547,6 +546,8 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 			}
 		}
 	}
+
+	fprintf(stderr, "Received signal %i, exiting\n", signal_flag);
 
 	set_eos_to_decoder(packet);
 	rtp_h26x_deinit();

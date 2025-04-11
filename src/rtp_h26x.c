@@ -138,50 +138,52 @@ bool _h265_payload_read_buffer(uint8_t *payload, int payload_size, uint8_t *nalu
    |S|E|  FuType   |
    +---------------+
         */
-
-        u_int8_t fu_header = payload[2];
-        bool fu_start = fu_header & 0x80;
-        bool fu_end = fu_header & 0x40;
-        u_int8_t fu_type = fu_header & 0x3F;
-        if (fu_start)
+        if (payload_size > 3)
         {
-            *pts = get_time_ns();
-            //fprintf(stdout, "Frag Nalu pts %llu ns\n", *pts);
-            // start of fragment
-            frag_nalu_started = true;
-            nalu[0] = 0;
-            nalu[1] = 0;
-            nalu[2] = 0;
-            nalu[3] = 1;
-            nalu[4] = (payload[0] & 0x81) | (fu_type << 1);     
-            nalu[5] = payload[1];
-            *nalu_size = 6;
-        }
-
-        // copy data
-        if (frag_nalu_started)
-        {
-            memcpy(nalu + *nalu_size, payload + 3, payload_size - 3);
-            *nalu_size += payload_size - 3;
-        }
-
-        // check if this is the end of the fragment
-        if (fu_end)
-        {
-            end_nalu = true;
-            frag_nalu_started = false;
-
-            /*
-            if (fu_type == 19)
+            u_int8_t fu_header = payload[2];
+            bool fu_start = fu_header & 0x80;
+            bool fu_end = fu_header & 0x40;
+            u_int8_t fu_type = fu_header & 0x3F;
+            if (fu_start)
             {
-                fprintf(stdout, "Iframe fragmented NAL unit type %i, size %i\n", fu_type, *nalu_size);
+                *pts = get_time_ns();
+                //fprintf(stdout, "Frag Nalu pts %llu ns\n", *pts);
+                // start of fragment
+                frag_nalu_started = true;
+                nalu[0] = 0;
+                nalu[1] = 0;
+                nalu[2] = 0;
+                nalu[3] = 1;
+                nalu[4] = (payload[0] & 0x81) | (fu_type << 1);     
+                nalu[5] = payload[1];
+                *nalu_size = 6;
             }
-            else
+
+            // copy data
+            if (frag_nalu_started)
             {
-                fprintf(stdout, "Non-Iframe fragmented NAL unit type %i, size %i\n", fu_type, *nalu_size);
-            } 
-            */ 
-        }        
+                memcpy(nalu + *nalu_size, payload + 3, payload_size - 3);
+                *nalu_size += payload_size - 3;
+            }
+
+            // check if this is the end of the fragment
+            if (fu_end)
+            {
+                end_nalu = true;
+                frag_nalu_started = false;
+
+                /*
+                if (fu_type == 19)
+                {
+                    fprintf(stdout, "Iframe fragmented NAL unit type %i, size %i\n", fu_type, *nalu_size);
+                }
+                else
+                {
+                    fprintf(stdout, "Non-Iframe fragmented NAL unit type %i, size %i\n", fu_type, *nalu_size);
+                } 
+                */ 
+            }        
+        }
     }
     else
     {
