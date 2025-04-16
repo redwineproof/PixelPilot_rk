@@ -13,6 +13,7 @@
 #include <stdbool.h>
 
 #include "time_util.h"
+#include "osd.h"
 
 #define RCV_PORT 12345 // Port for receiving timestamps
 #define SEND_PORT 12346   // Port for sending timestamps
@@ -124,20 +125,33 @@ void record_vsync_ts(void) {
     {
         unsigned long long g2g_latency = (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000;
         osd_publish_uint_fact("timestamp.g2g", NULL, 0, g2g_latency);
+        unsigned long long sensor_latency = (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.sensor", NULL, 0, sensor_latency);
+        unsigned long long isp_latency = (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.isp", NULL, 0, isp_latency);
+        unsigned long long vpe_venc_latency = (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.vpe_venc", NULL, 0, vpe_venc_latency);
+        unsigned long long transmission_latency = (((long long)buf->ground.nal_rcvd_timestamp) - ((long long)buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000;
+        osd_publish_uint_fact("timestamp.transmission", NULL, 0, transmission_latency);
+        unsigned long long decoding_latency = (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.decoding", NULL, 0, decoding_latency);
+        unsigned long long display_latency = (buf->ground.vsync_timestamp - buf->ground.frame_decoded_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.display", NULL, 0, display_latency);
+        unsigned long long frame_size = buf->ground.frame_size;
+        osd_publish_uint_fact("timestamp.size", NULL, 0, frame_size);
 
         #ifdef DEBUG
-        fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n",
-                (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000);
+        fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n", g2g_latency);
         fprintf(stdout, "Nb: %i, S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu, Size: %i, Status: %s\n",
                 frame_counter,
-                (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000,
-                (buf->air.ispframedone_timestamp - buf->air.frameend_timestamp) / 1000,
-                (buf->air.vencdone_timestamp - buf->air.ispframedone_timestamp) / 1000,
-                (((long long)buf->ground.nal_rcvd_timestamp) - ((long long)buf->air.vencdone_timestamp) - adjust_air_to_ground) / 1000,
-                (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000,
+                sensor_latency,
+                isp_latency,
+                vpe_venc_latency,
+                transmission_latency,
+                decoding_latency,
                 (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
                 (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
-                buf->ground.frame_size,
+                frame_size,
                 buf->air_synced == true ? "Synced": "Not synced");
         #endif
     }

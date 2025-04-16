@@ -892,9 +892,158 @@ class VideoG2GWidget: public IconTplTextWidget {
 	private:
 		RunningAverage g2g;
 	};
+
+class VideoSensorWidget: public IconTplTextWidget {
+	public:
+	VideoSensorWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			sensor(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
 	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong sensor_latency = fact.getUintValue();
+			sensor.add(sensor_latency);
+			Stats stats = sensor.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("sensor_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("sensor_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage sensor;
+	};
 
+class VideoIspWidget: public IconTplTextWidget {
+	public:
+	VideoIspWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			isp(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong isp_latency = fact.getUintValue();
+			isp.add(isp_latency);
+			Stats stats = isp.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("isp_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("isp_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage isp;
+	};
 
+class VideoVpeVencWidget: public IconTplTextWidget {
+	public:
+	VideoVpeVencWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			vpe_venc(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong vpe_venc_latency = fact.getUintValue();
+			vpe_venc.add(vpe_venc_latency);
+			Stats stats = vpe_venc.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("vpe_venc_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("vpe_venc_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage vpe_venc;
+	};
+class VideoTransmissionWidget: public IconTplTextWidget {
+	public:
+	VideoTransmissionWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			transmission(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong transmission_latency = fact.getUintValue();
+			transmission.add(transmission_latency);
+			Stats stats = transmission.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("transmission_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("transmission_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage transmission;
+	};
+
+class VideoDecodingWidget: public IconTplTextWidget {
+	public:
+	VideoDecodingWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			decoding(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong decoding_latency = fact.getUintValue();
+			decoding.add(decoding_latency);
+			Stats stats = decoding.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("decoding_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("decoding_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage decoding;
+	};
+class VideoDisplayWidget: public IconTplTextWidget {
+	public:
+	VideoDisplayWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			display(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong display_latency = fact.getUintValue();
+			display.add(display_latency);
+			Stats stats = display.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("display_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("display_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage display;
+	};
+
+class VideoSizeWidget: public IconTplTextWidget {
+	public:
+	VideoSizeWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+							cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			size(window_size_ms, bucket_size_ms) {
+			assert(num_args == 1);
+		};
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong frame_size = fact.getUintValue();
+			size.add(frame_size);
+			Stats stats = size.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("size_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("size_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage size;
+	};
 class GPSWidget: public Widget {
 public:
 	GPSWidget(int pos_x, int pos_y, uint num_args) :
@@ -1231,6 +1380,76 @@ public:
 				addWidget(new VideoG2GWidget(x, y, window_size_s * 1000, bucket_size_ms,
 													   icon, tpl, 1),
 						  matchers);
+			} else if(type == "VideoSensorWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoSensorWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);
+			} else if(type == "VideoIspWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoIspWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);
+			} else if(type == "VideoVpeVencWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoVpeVencWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);
+			} else if(type == "VideoTransmissionWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoTransmissionWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);	
+			} else if(type == "VideoDecodingWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoDecodingWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);	
+			} else if(type == "VideoDisplayWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoDisplayWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);
+			} else if(type == "VideoSizeWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoSizeWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);	
 			}else if(type == "BoxWidget") {
 				auto width = widget_j.at("width").template get<uint>();
 				auto height = widget_j.at("height").template get<uint>();

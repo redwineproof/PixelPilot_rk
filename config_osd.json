@@ -105,7 +105,7 @@
             "x": -370,
             "y": 100,
             "width": 370,
-            "height": 100,
+            "height": 350,
             "color": {
                 "r": 0.0,
                 "g": 0.0,
@@ -166,12 +166,117 @@
                     "name": "timestamp.g2g"
                 }
             ]
-        },     
+        },
+        {
+            "name": "Latency sensor",
+            "type": "VideoSensorWidget",
+            "x": -350,
+            "y": 216,
+            "icon_path": "network.png",
+            "template": "Snr %f ms | Max %f ms",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.sensor"
+                }
+            ]
+        },       
+        {
+            "name": "Latency isp",
+            "type": "VideoIspWidget",
+            "x": -350,
+            "y": 246,
+            "icon_path": "network.png",
+            "template": "Isp %f ms | Max %f ms",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.isp"
+                }
+            ]
+        },
+        {
+            "name": "Latency vpe/venc",
+            "type": "VideoVpeVencWidget",
+            "x": -350,
+            "y": 276,
+            "icon_path": "network.png",
+            "template": "Enc %f ms | Max %f ms",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.vpe_venc"
+                }
+            ]
+        },
+        {
+            "name": "Latency transmission",
+            "type": "VideoTransmissionWidget",
+            "x": -350,
+            "y": 306,
+            "icon_path": "network.png",
+            "template": "Tra %f ms | Max %f ms",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.transmission"
+                }
+            ]
+        },
+        {
+            "name": "Latency Decoding",
+            "type": "VideoDecodingWidget",
+            "x": -350,
+            "y": 336,
+            "icon_path": "network.png",
+            "template": "Dec %f ms | Max %f ms",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.decoding"
+                }
+            ]
+        },
+        {
+            "name": "Latency Display",
+            "type": "VideoDisplayWidget",
+            "x": -350,
+            "y": 366,
+            "icon_path": "network.png",
+            "template": "Dis %f ms | Max %f ms",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.display"
+                }
+            ]
+        },
+        {
+            "name": "Frame Size",
+            "type": "VideoSizeWidget",
+            "x": -350,
+            "y": 396,
+            "icon_path": "network.png",
+            "template": "Size %f kb | Max %f kb",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {
+                    "name": "timestamp.size"
+                }
+            ]
+        },
         {
             "name": "DVR status",
             "type": "DvrStatusWidget",
             "x": -350,
-            "y": 216,
+            "y": 426,
             "icon_path": "sdcard-white.png",
             "text": "Recording",
             "facts": [
