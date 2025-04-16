@@ -108,7 +108,7 @@ void record_frame_displayed_ts(unsigned long frameNb) {
     ts_buffers.frame_counter = frameNb;
 }
 
-#define DEBUG
+//#define DEBUG
 
 void record_vsync_ts(void) {
     unsigned long long ts = get_time_ns();
@@ -117,10 +117,15 @@ void record_vsync_ts(void) {
     buf->ground.vsync_timestamp = ts;
 
     long long adjust_air_to_ground = buf->ground_time_ns - buf->air_time_ns - buf->air.one_way_delay_ns;
+   
 
-#ifdef DEBUG
+
     if (buf->air_received)
     {
+        unsigned long long g2g_latency = (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000;
+        osd_publish_uint_fact("timestamp.g2g", NULL, 0, g2g_latency);
+
+        #ifdef DEBUG
         fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n",
                 (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000);
         fprintf(stdout, "Nb: %i, S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu, Size: %i, Status: %s\n",
@@ -134,9 +139,11 @@ void record_vsync_ts(void) {
                 (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
                 buf->ground.frame_size,
                 buf->air_synced == true ? "Synced": "Not synced");
+        #endif
     }
     else
     {
+        #ifdef DEBUG
         fprintf(stdout, "Frame Rcv to Screen Vsync:     %llu us\n",
             (buf->ground.vsync_timestamp - buf->ground.nal_rcvd_timestamp) / 1000);
         fprintf(stdout, "Nb: %i, D:%llu F:%llu V:%llu, Size: %i\n",
@@ -145,8 +152,9 @@ void record_vsync_ts(void) {
                 (buf->ground.frame_displayed_timestamp - buf->ground.frame_decoded_timestamp) / 1000,
                 (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
                 buf->ground.frame_size);
+        #endif
     }
-#endif
+
 
     // reset validity
     buf->air_received = false;

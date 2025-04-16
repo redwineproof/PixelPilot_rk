@@ -871,6 +871,29 @@ private:
 	RunningAverage timing;
 };
 
+class VideoG2GWidget: public IconTplTextWidget {
+	public:
+	VideoG2GWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+						 cairo_surface_t *icon, std::string tpl, uint num_args) :
+			IconTplTextWidget(pos_x, pos_y, icon, tpl, 2),  // 2 args, because we calculate max/avg
+			g2g(window_size_ms, bucket_size_ms) {
+		  assert(num_args == 1);
+	  };
+	
+		virtual void setFact(uint idx, Fact fact) {
+			assert(idx == 0);
+			ulong g2g_latency = fact.getUintValue();
+			g2g.add(g2g_latency);
+			Stats stats = g2g.get_stats_over_last_ms_result(1000);
+			args[0] = Fact(FactMeta("g2g_avg"), stats.average / 1000.0);
+			args[1] = Fact(FactMeta("g2g_max"), stats.max / 1000.0);
+		}
+	
+	private:
+		RunningAverage g2g;
+	};
+	
+
 
 class GPSWidget: public Widget {
 public:
@@ -1198,7 +1221,17 @@ public:
 				addWidget(new VideoDecodeLatencyWidget(x, y, window_size_s * 1000, bucket_size_ms,
 													   icon, tpl, 1),
 						  matchers);
-			} else if(type == "BoxWidget") {
+			} else if(type == "VideoG2GWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new VideoG2GWidget(x, y, window_size_s * 1000, bucket_size_ms,
+													   icon, tpl, 1),
+						  matchers);
+			}else if(type == "BoxWidget") {
 				auto width = widget_j.at("width").template get<uint>();
 				auto height = widget_j.at("height").template get<uint>();
 				json color_j = widget_j.at("color");
