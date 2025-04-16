@@ -14,12 +14,15 @@
 
 #include "time_util.h"
 
-#define GROUND_PORT 12345 // Port du système "ground"
+#define RCV_PORT 12345 // Port for receiving timestamps
+#define SEND_PORT 12346   // Port for sending timestamps
 #define PERIOD_MS 1000    // Période en millisecondes
 #define TIMEOUT_US 100000 // Timeout en microsecondes
 #define PACKET_MAGIC 0xA1B2C3D4
 
-static int sockfd = -1;
+static pthread_t ground_thread;
+static int rcv_sockfd, send_sockfd;
+static struct sockaddr_in client_addr, send_addr;
 
 // Define htonll and ntohll functions
 uint64_t htonll(uint64_t value) {
@@ -150,14 +153,11 @@ void record_vsync_ts(void) {
     buf->air_synced = false;
 }
 
-#define DEBUG
 
 extern int signal_flag;
 
 void *ground_thread_func(void *arg) {
 
-	struct sockaddr_in air_addr;
-	socklen_t addr_len = sizeof(air_addr);
 	struct timespec ts;
 	unsigned long long air_time_ns;
 	unsigned long long ground_time_ns;
@@ -165,22 +165,21 @@ void *ground_thread_func(void *arg) {
 	air_packet_t air_packet;
     packet_type_t type;
     uint32_t magic;
-
-	// Recevoir le temps "air" avec timeout
-	struct timeval timeout;
-	timeout.tv_sec = 0;
-	timeout.tv_usec = TIMEOUT_US;
-	setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    socklen_t addr_len = sizeof(client_addr);
+    ssize_t packet_size;
 
     while (!signal_flag) {
 
-		if (recvfrom(sockfd, &air_packet, sizeof(air_packet), 0, (struct sockaddr *)&air_addr, &addr_len) < 0) {
-			if (errno == EWOULDBLOCK || errno == EAGAIN) {
-				fprintf(stderr, "Receive timeout\n");
-			} else {
-				perror("Failed to receive data");
-			}
-		}
+        packet_size = recvfrom(rcv_sockfd, &air_packet, sizeof(air_packet), 0, (struct sockaddr *)&client_addr, &addr_len);
+        if (packet_size < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                fprintf(stderr, "Receive timeout\n");
+            } else {
+                perror("Failed to receive packet");
+                break;
+            }
+        }
+
 		else
 		{
             // Validate the magic number
@@ -200,9 +199,10 @@ void *ground_thread_func(void *arg) {
 			
 				// Envoyer le temps "ground" au système "air"
 				ground_time_ns_network = htonll(ground_time_ns);
-				if (sendto(sockfd, &ground_time_ns_network, sizeof(ground_time_ns_network), 0, (struct sockaddr *)&air_addr, addr_len) < 0) {
-					perror("Failed to send data");
-				}
+
+                if (sendto(send_sockfd, &ground_time_ns_network, sizeof(ground_time_ns_network), 0, (struct sockaddr *)&send_addr, sizeof(send_addr)) < 0) {
+                    perror("Failed to send response packet");
+                }
 			}
 			else if (type == PACKET_TYPE_AIR_TIMESTAMPS) {
 				air_timestamp_buffer_t *air_timestamps = &air_packet.data.air_timestamps;
@@ -238,33 +238,63 @@ void *ground_thread_func(void *arg) {
     return NULL;
 }
 
-static pthread_t ground_thread;
+
 
 int timestamp_init(void)
 {
-	// Créer un socket UDP
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("Failed to create socket");
+    struct sockaddr_in server_addr;
+
+    // Créer un socket UDP pour recevoir
+    if ((rcv_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Failed to create receive socket");
         return 1;
     }
 
-    struct sockaddr_in ground_addr;
-    memset(&ground_addr, 0, sizeof(ground_addr));
-    ground_addr.sin_family = AF_INET;
-    ground_addr.sin_addr.s_addr = INADDR_ANY;
-    ground_addr.sin_port = htons(GROUND_PORT);
+    // Configurer l'adresse du serveur pour recevoir
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(RCV_PORT);
 
     // Lier le socket à l'adresse et au port
-    if (bind(sockfd, (struct sockaddr *)&ground_addr, sizeof(ground_addr)) < 0) {
-        perror("Failed to bind socket");
-        close(sockfd);
+    if (bind(rcv_sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Failed to bind receive socket");
+        close(rcv_sockfd);
         return 1;
     }
+
+    // Configurer le timeout pour recvfrom
+    struct timeval timeout = { .tv_sec = 0, .tv_usec = TIMEOUT_US };
+    if (setsockopt(rcv_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        perror("Failed to set receive socket timeout");
+        close(rcv_sockfd);
+        return 1;
+    }
+
+    // Créer un socket UDP pour envoyer
+    if ((send_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Failed to create send socket");
+        close(rcv_sockfd);
+        return 1;
+    }
+
+    // Configurer l'adresse pour envoyer
+    memset(&send_addr, 0, sizeof(send_addr));
+    send_addr.sin_family = AF_INET;
+    send_addr.sin_port = htons(SEND_PORT);
+    if (inet_pton(AF_INET, "127.0.0.1", &send_addr.sin_addr) <= 0) {
+        perror("Invalid send address");
+        close(rcv_sockfd);
+        close(send_sockfd);
+        return 1;
+    }
+
 
 	// Créer et démarrer le thread pour le système "ground"
 	if (pthread_create(&ground_thread, NULL, ground_thread_func, NULL) != 0) {
 		perror("Failed to create ground thread");
-		close(sockfd);
+        close(rcv_sockfd);
+        close(send_sockfd);
 		return 1;
 	}
 
@@ -276,6 +306,7 @@ int timestamp_exit(void)
 	pthread_join(ground_thread, NULL);
 
     // Fermer le socket à la fin du programme
-    close(sockfd);
+    close(rcv_sockfd);
+    close(send_sockfd);
 	return 0;
 }
