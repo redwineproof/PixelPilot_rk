@@ -157,6 +157,13 @@ void record_vsync_ts(void) {
     }
     else
     {
+        unsigned long long decoding_latency = (buf->ground.frame_decoded_timestamp - buf->ground.nal_rcvd_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.decoding", NULL, 0, decoding_latency);
+        unsigned long long display_latency = (buf->ground.vsync_timestamp - buf->ground.frame_decoded_timestamp) / 1000;
+        osd_publish_uint_fact("timestamp.display", NULL, 0, display_latency);
+        unsigned long long frame_size = buf->ground.frame_size;
+        osd_publish_uint_fact("timestamp.size", NULL, 0, frame_size);
+
         #ifdef DEBUG
         fprintf(stdout, "Frame Rcv to Screen Vsync:     %llu us\n",
             (buf->ground.vsync_timestamp - buf->ground.nal_rcvd_timestamp) / 1000);
