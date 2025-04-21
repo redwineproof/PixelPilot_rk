@@ -50,6 +50,7 @@ typedef struct {
     unsigned long long ispframedone_timestamp;
     unsigned long long vencdone_timestamp;
     unsigned long long one_way_delay_ns;
+    unsigned long long air_time_ns;
 } air_timestamp_buffer_t;
 
 typedef struct {
@@ -58,12 +59,11 @@ typedef struct {
     unsigned long long frame_decoded_timestamp;
     unsigned long long frame_displayed_timestamp;
     unsigned long long vsync_timestamp;
+    unsigned long long ground_time_ns;
     unsigned long frame_size;
 } ground_timestamp_buffer_t;
 
 typedef struct {
-    unsigned long long        air_time_ns;
-    unsigned long long        ground_time_ns;
     bool                      air_received;
     bool                      air_synced;
     air_timestamp_buffer_t    air;
@@ -117,12 +117,16 @@ void record_vsync_ts(void) {
     air_ground_timestamp_buffer_t *buf = &ts_buffers.buffer[frame_counter % K_TS_BUFFER_SIZE];
     buf->ground.vsync_timestamp = ts;
 
-    long long adjust_air_to_ground = buf->ground_time_ns - buf->air_time_ns - buf->air.one_way_delay_ns;
-   
-
-
-    if (buf->air_received)
+    if ((buf->air_received)&&(frame_counter == buf->air.frameNb))
     {
+        if (!buf->air_synced)
+        {
+            // force transmission time to 3ms "divinus => wfb_tx ===== wfb_rx => pixelpilot" (mean measured value)
+            buf->air.one_way_delay_ns = 3000000;
+        }
+        long long adjust_air_to_ground = buf->ground.ground_time_ns - buf->air.air_time_ns - buf->air.one_way_delay_ns;
+
+
         unsigned long long g2g_latency = (buf->ground.vsync_timestamp - buf->air.vsync_timestamp - adjust_air_to_ground) / 1000;
         osd_publish_uint_fact("timestamp.g2g", NULL, 0, g2g_latency);
         unsigned long long sensor_latency = (buf->air.frameend_timestamp - buf->air.vsync_timestamp) / 1000;
@@ -141,6 +145,7 @@ void record_vsync_ts(void) {
         osd_publish_uint_fact("timestamp.size", NULL, 0, frame_size);
 
         #ifdef DEBUG
+        
         fprintf(stdout, "Sensor Vsync to Screen Vsync:     %llu us\n", g2g_latency);
         fprintf(stdout, "Nb: %i, S:%llu I:%llu E:%llu T:%llu D:%llu F:%llu V:%llu, Size: %i, Status: %s\n",
                 frame_counter,
@@ -153,6 +158,10 @@ void record_vsync_ts(void) {
                 (buf->ground.vsync_timestamp - buf->ground.frame_displayed_timestamp) / 1000,
                 frame_size,
                 buf->air_synced == true ? "Synced": "Not synced");
+        if (buf->air_synced)
+        {
+            fprintf(stdout, "delay: %llu us\n", buf->air.one_way_delay_ns / 1000);
+        }
         #endif
     }
     else
@@ -211,6 +220,10 @@ void *ground_thread_func(void *arg) {
 
 		else
 		{
+            // Capturer le temps "ground"
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            ground_time_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+
             // Validate the magic number
             magic = ntohl(air_packet.magic);
             //fprintf(stdout, "Magic: %x\n", magic);
@@ -222,16 +235,14 @@ void *ground_thread_func(void *arg) {
             type = ntohl(air_packet.type);
 			if (type == PACKET_TYPE_AIR_TIME) {
 				air_time_ns = ntohll(air_packet.data.air_time_ns);
-				// Capturer le temps "ground"
-				clock_gettime(CLOCK_MONOTONIC, &ts);
-				ground_time_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-			
+							
 				// Envoyer le temps "ground" au système "air"
 				ground_time_ns_network = htonll(ground_time_ns);
-
+                
+                /* Deactivate it, at it causes some fec recovery 
                 if (sendto(send_sockfd, &ground_time_ns_network, sizeof(ground_time_ns_network), 0, (struct sockaddr *)&send_addr, sizeof(send_addr)) < 0) {
                     perror("Failed to send response packet");
-                }
+                } */
 			}
 			else if (type == PACKET_TYPE_AIR_TIMESTAMPS) {
 				air_timestamp_buffer_t *air_timestamps = &air_packet.data.air_timestamps;
@@ -244,14 +255,14 @@ void *ground_thread_func(void *arg) {
 				air_timestamps->ispframedone_timestamp = ntohll(air_timestamps->ispframedone_timestamp);
 				air_timestamps->vencdone_timestamp = ntohll(air_timestamps->vencdone_timestamp);
 				air_timestamps->one_way_delay_ns = ntohll(air_timestamps->one_way_delay_ns);
+                air_timestamps->air_time_ns = ntohll(air_timestamps->air_time_ns);
 
 				// store it
 				memcpy(&ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air, air_timestamps, sizeof(air_timestamp_buffer_t));
-				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_time_ns = air_time_ns;
-				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].ground_time_ns = ground_time_ns;
+				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].ground.ground_time_ns = ground_time_ns;
 
 				// set validity
-				ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_received = true;
+                ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_received = true;
 				if (air_timestamps->one_way_delay_ns) {
 					ts_buffers.buffer[air_timestamps->frameNb % K_TS_BUFFER_SIZE].air_synced = true;
 				}
