@@ -257,7 +257,7 @@ bool rtp_h26x_read_buffer(uint8_t *buffer, int n, uint8_t *nalu, int *nalu_size,
         // check if we've missed rtp packets
         static uint16_t last_rtp_seq = 0;
         uint16_t current_rtp_seq = (((uint16_t)buffer[2]) << 8) | buffer[3];
-        if (!first_rtp_pkt && ((last_rtp_seq + 1) != current_rtp_seq))
+        if (!first_rtp_pkt && ((uint16_t)(last_rtp_seq + 1) != current_rtp_seq))
         {
             fprintf(stdout, "Missed RTP packets from %i to %i\n", last_rtp_seq, current_rtp_seq);
             // reset nalu
