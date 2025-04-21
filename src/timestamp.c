@@ -202,7 +202,7 @@ void *ground_thread_func(void *arg) {
         packet_size = recvfrom(rcv_sockfd, &air_packet, sizeof(air_packet), 0, (struct sockaddr *)&client_addr, &addr_len);
         if (packet_size < 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                fprintf(stderr, "Receive timeout\n");
+                //fprintf(stderr, "Receive timeout\n");
             } else {
                 perror("Failed to receive packet");
                 break;
