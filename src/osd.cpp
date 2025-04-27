@@ -1044,6 +1044,44 @@ class VideoSizeWidget: public IconTplTextWidget {
 	private:
 		RunningAverage size;
 	};
+
+#include <vector>
+
+#define STATS_NUM_ARGS 10
+
+class WfbStatsWidget : public IconTplTextWidget {
+public:
+    WfbStatsWidget(int pos_x, int pos_y, uint window_size_ms, uint bucket_size_ms,
+                   cairo_surface_t *icon, std::string tpl, uint num_args) :
+        IconTplTextWidget(pos_x, pos_y, icon, tpl, STATS_NUM_ARGS),  // Initialize base class
+        pkts(window_size_ms, bucket_size_ms),  // Initialize pkts
+        stats_array(STATS_NUM_ARGS, RunningAverage(window_size_ms, bucket_size_ms)) {  // Initialize vector
+        assert(num_args == 1);
+    }
+
+    virtual void setFact(uint idx, Fact fact) {
+        ulong data = fact.getUintValue();
+
+        if (idx == 0) {
+            pkts.add(data);
+			Stats stats = pkts.get_stats_over_last_ms_result(1000);
+            args[idx] = Fact(FactMeta("pkts"), stats.sum);
+        } else {
+            // Add data to the corresponding RunningAverage in the array
+            stats_array[idx - 1].add(data);
+
+            // Retrieve stats from the RunningAverage
+            Stats stats = stats_array[idx - 1].get_stats_over_last_ms_result(1000);
+			Stats stats_pkt = pkts.get_stats_over_last_ms_result(1000);
+
+            args[idx] = Fact(FactMeta("sum"), stats.sum * 100.0 / stats_pkt.sum);
+        }
+    }
+
+private:
+    RunningAverage pkts;  // Single RunningAverage instance
+    std::vector<RunningAverage> stats_array;  // Vector of RunningAverage
+};
 class GPSWidget: public Widget {
 public:
 	GPSWidget(int pos_x, int pos_y, uint num_args) :
@@ -1450,6 +1488,16 @@ public:
 				addWidget(new VideoSizeWidget(x, y, window_size_s * 1000, bucket_size_ms,
 														icon, tpl, 1),
 							matchers);	
+			} else if(type == "WfbStatsWidget") {
+				auto tpl = widget_j.at("template").template get<std::string>();
+				auto icon_path = widget_j.at("icon_path").template get<std::filesystem::path>();
+				uint window_size_s = widget_j.at("per_second_window_s").template get<uint>();
+				uint bucket_size_ms = widget_j.at("per_second_bucket_ms").template get<uint>();;
+				cairo_surface_t *icon = openIcon(name, assets_dir, icon_path);
+				if (icon == NULL) break;
+				addWidget(new WfbStatsWidget(x, y, window_size_s * 1000, bucket_size_ms,
+														icon, tpl, 1),
+							matchers);
 			}else if(type == "BoxWidget") {
 				auto width = widget_j.at("width").template get<uint>();
 				auto height = widget_j.at("height").template get<uint>();

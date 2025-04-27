@@ -99,10 +99,174 @@
                 {"range": [-130, -80],"icon_path": "signal5.png"}
             ]
         },
+
+        {
+            "name": "Metrics background 2",
+            "type": "BoxWidget",
+            "x": -1800,
+            "y": 100,
+            "width": 530,
+            "height": 70,
+            "color": {
+                "r": 0.0,
+                "g": 0.2,
+                "b": 0.0,
+                "alpha": 0.4
+            },
+            "facts": []
+        },
+
+        {
+            "type": "TplTextWidget",
+            "name": "RX packet count",
+            "x": -1780,
+            "y": 120,
+            "template": "MCS:%u F:%u BW:%u RSSI(dBm):%i %i %i %i",
+            "facts": [
+                {
+                    "name": "wfbcli.rx.ant_stats.mcs",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+
+                {
+                    "name": "wfbcli.rx.ant_stats.freq",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+
+                {
+                    "name": "wfbcli.rx.ant_stats.bw",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.rssi_avg",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.rssi_avg",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "1"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.rssi_avg",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "256"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.rssi_avg",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "257"
+                    }
+                }
+
+            ]
+        },
+
+        {
+            "name": "Wfb Stats",
+            "type": "WfbStatsWidget",
+            "x": -1780,
+            "y": 150,
+            "icon_path": "network.png",
+            "template": "Pkt/s:%i R:%f L:%f E:%f",
+            "per_second_window_s": 2,
+            "per_second_bucket_ms": 200,
+            "facts": [
+                {"name": "wfbcli.rx.packets.out.delta"},
+                {"name": "wfbcli.rx.packets.fec_rec.delta"},
+                {"name": "wfbcli.rx.packets.lost.delta"},
+                {"name": "wfbcli.rx.packets.dec_err.delta"}
+            ]
+        },
+        
+        {
+            "name": "Dump raw facts to the scren (remove `--` from `type` to enable)",
+            "type": "--DebugWidget",
+            "x": 10,
+            "y": -200,
+            "facts": [
+                {
+                    "name": "mavlink.heartbeet.base_mode.armed"
+                },
+                {
+                    "name": "wfbcli.rx.packets.all",
+                    "tags": {
+                        "id": "video rx"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.packets.lost",
+                    "tags": {
+                        "id": "video rx"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.freq",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.mcs",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.rssi_avg",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "0"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.freq",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "1"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.mcs",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "1"
+                    }
+                },
+                {
+                    "name": "wfbcli.rx.ant_stats.rssi_avg",
+                    "tags": {
+                        "id": "video rx",
+                        "ant_id": "1"
+                    }
+                }
+            ]
+        },
+
+
+
         {
             "name": "Metrics background",
             "type": "BoxWidget",
-            "x": -370,
+            "x": -470,
             "y": 100,
             "width": 370,
             "height": 350,
@@ -117,7 +281,7 @@
         {
             "name": "Video FPS and resolution",
             "type": "VideoWidget",
-            "x": -350,
+            "x": -450,
             "y": 126,
             "icon_path": "framerate.png",
             "template": "%u fps | %ux%u",
@@ -139,7 +303,7 @@
         {
             "name": "Video link throughput",
             "type": "VideoBitrateWidget",
-            "x": -350,
+            "x": -450,
             "y": 156,
             "icon_path": "network.png",
             "template": "%f Mbps",
@@ -155,7 +319,7 @@
         {
             "name": "Latency glass to glass",
             "type": "VideoG2GWidget",
-            "x": -350,
+            "x": -450,
             "y": 186,
             "icon_path": "network.png",
             "template": "Avg %f ms | Max %f ms",
@@ -170,7 +334,7 @@
         {
             "name": "Latency sensor",
             "type": "VideoSensorWidget",
-            "x": -350,
+            "x": -450,
             "y": 216,
             "icon_path": "network.png",
             "template": "Snr %f ms | Max %f ms",
@@ -185,7 +349,7 @@
         {
             "name": "Latency isp",
             "type": "VideoIspWidget",
-            "x": -350,
+            "x": -450,
             "y": 246,
             "icon_path": "network.png",
             "template": "Isp %f ms | Max %f ms",
@@ -200,7 +364,7 @@
         {
             "name": "Latency vpe/venc",
             "type": "VideoVpeVencWidget",
-            "x": -350,
+            "x": -450,
             "y": 276,
             "icon_path": "network.png",
             "template": "Enc %f ms | Max %f ms",
@@ -215,7 +379,7 @@
         {
             "name": "Latency transmission",
             "type": "VideoTransmissionWidget",
-            "x": -350,
+            "x": -450,
             "y": 306,
             "icon_path": "network.png",
             "template": "Tra %f ms | Max %f ms",
@@ -230,7 +394,7 @@
         {
             "name": "Latency Decoding",
             "type": "VideoDecodingWidget",
-            "x": -350,
+            "x": -450,
             "y": 336,
             "icon_path": "network.png",
             "template": "Dec %f ms | Max %f ms",
@@ -245,7 +409,7 @@
         {
             "name": "Latency Display",
             "type": "VideoDisplayWidget",
-            "x": -350,
+            "x": -450,
             "y": 366,
             "icon_path": "network.png",
             "template": "Dis %f ms | Max %f ms",
@@ -260,7 +424,7 @@
         {
             "name": "Frame Size",
             "type": "VideoSizeWidget",
-            "x": -350,
+            "x": -450,
             "y": 396,
             "icon_path": "network.png",
             "template": "Size %f kb | Max %f kb",
@@ -275,7 +439,7 @@
         {
             "name": "DVR status",
             "type": "DvrStatusWidget",
-            "x": -350,
+            "x": -450,
             "y": 426,
             "icon_path": "sdcard-white.png",
             "text": "Recording",
