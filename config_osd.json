@@ -106,7 +106,7 @@
             "x": -1800,
             "y": 100,
             "width": 530,
-            "height": 70,
+            "height": 100,
             "color": {
                 "r": 0.0,
                 "g": 0.2,
@@ -118,7 +118,7 @@
 
         {
             "type": "TplTextWidget",
-            "name": "RX packet count",
+            "name": "WFB link status",
             "x": -1780,
             "y": 120,
             "template": "MCS:%u F:%u BW:%u RSSI(dBm):%i %i %i %i",
@@ -177,7 +177,7 @@
 
             ]
         },
-
+        
         {
             "name": "Wfb Stats",
             "type": "WfbStatsWidget",
@@ -188,10 +188,24 @@
             "per_second_window_s": 2,
             "per_second_bucket_ms": 200,
             "facts": [
-                {"name": "wfbcli.rx.packets.out.delta"},
-                {"name": "wfbcli.rx.packets.fec_rec.delta"},
-                {"name": "wfbcli.rx.packets.lost.delta"},
-                {"name": "wfbcli.rx.packets.dec_err.delta"}
+                {"name": "wfbcli.rx.packets.out.delta", "tags": {"id": "video rx"}},
+                {"name": "wfbcli.rx.packets.fec_rec.delta", "tags": {"id": "video rx"}},
+                {"name": "wfbcli.rx.packets.lost.delta", "tags": {"id": "video rx"}},
+                {"name": "wfbcli.rx.packets.dec_err.delta", "tags": {"id": "video rx"}}
+            ]
+        },
+
+        {
+            "type": "TplTextWidget",
+            "name": "RX packet total",
+            "x": -1780,
+            "y": 180,
+            "template": "PKT:%u R:%u L:%u E:%u",
+            "facts": [
+                {"name": "wfbcli.rx.packets.out.total", "tags": {"id": "video rx"}},
+                {"name": "wfbcli.rx.packets.fec_rec.total", "tags": {"id": "video rx"}},
+                {"name": "wfbcli.rx.packets.lost.total", "tags": {"id": "video rx"}},
+                {"name": "wfbcli.rx.packets.dec_err.total", "tags": {"id": "video rx"}}
             ]
         },
         
