@@ -508,7 +508,7 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 	}
 
 	// init rtp udp port
-	rtp_h26x_init(port);
+	rtp_h26x_init("rtp_local");
 
 	timestamp_init();
 

@@ -1,54 +1,50 @@
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/select.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include "rtp_h26x.h"
 #include "time_util.h"
 
 static int g_sockfd;
-static int g_cliaddr;
 
-void rtp_h26x_init(int port)
+void rtp_h26x_init(const char *unix_socket)
 {
-    int sockfd;
-    struct sockaddr_in servaddr;
-    socklen_t len;
+    fprintf(stderr, "Creating receiver socket on %s", unix_socket);
+    g_sockfd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (g_sockfd < 0) {
+        fprintf(stderr, "socket() failed: %s", strerror(errno));
+    }
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    // Abstract socket: Start sun_path with a null byte, then copy the rest.
+    // The "@" in logs is a placeholder for the null byte.
+    addr.sun_path[0] = '\0';  // First byte is null
+    strncpy(addr.sun_path + 1, unix_socket, sizeof(addr.sun_path) - 2);  // Leave room for null
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';  // Ensure null-terminated
 
-    // Create UDP socket
-    if ((g_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("socket creation failed");
-        exit(EXIT_FAILURE);
+    // Length = sizeof(sun_family) + 1 (null byte) + strlen(path)
+    socklen_t addr_len = sizeof(addr.sun_family) + 1 + strlen(unix_socket);
+    if (bind(g_sockfd, (struct sockaddr*)&addr, addr_len) < 0) {
+        close(g_sockfd);
+        fprintf(stderr, "bind() failed: %s", strerror(errno));
     }
 
-	fprintf(stdout, "Socket created\n");
+    fprintf(stderr, "Bound successfully to abstract socket: @%s", unix_socket);
 
-    memset(&servaddr, 0, sizeof(servaddr));
-    memset(&g_cliaddr, 0, sizeof(g_cliaddr));
-
-    // Fill server information
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = INADDR_ANY;
-    servaddr.sin_port = htons(port);
-
-    // Bind the socket with the server address
-    if (bind(g_sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        perror("bind failed");
-        close(sockfd);
-        exit(EXIT_FAILURE);
-    }
-
-	fprintf(stdout, "Socket bind on port %i\n", port);
+    int buf_size = 1024 * 1024; // 1 MB
+    setsockopt(g_sockfd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+    setsockopt(g_sockfd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
 }
 
 void rtp_h26x_deinit(void)
 {
     close(g_sockfd);
 }
-
-
 
 int rtp_pkt_rcv(uint8_t *buffer)
 {
@@ -68,15 +64,21 @@ int rtp_pkt_rcv(uint8_t *buffer)
 
     if (retval == -1) {
         perror("select failed");
-    } else if (retval != 0) {
+    } else if (retval > 0) {
         if (FD_ISSET(g_sockfd, &readfds)) {
-            int len = sizeof(g_cliaddr);
-            bytes_rcvd = recvfrom(g_sockfd, buffer, MAX_RTP_PACKET_SIZE, MSG_WAITALL, (struct sockaddr *)&g_cliaddr, &len);
+            struct sockaddr_un cliaddr;
+            socklen_t len = sizeof(cliaddr);
+
+            // Recevoir les données du socket Unix
+            bytes_rcvd = recvfrom(g_sockfd, buffer, MAX_RTP_PACKET_SIZE, MSG_WAITALL, (struct sockaddr *)&cliaddr, &len);
             if (bytes_rcvd < 0) {
                 perror("recvfrom failed");
-            }
+            } 
         }
+    } else {
+        //fprintf(stdout, "Waiting for packets\n");
     }
+
     return bytes_rcvd;
 }
 

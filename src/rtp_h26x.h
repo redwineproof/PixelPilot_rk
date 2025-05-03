@@ -8,10 +8,10 @@ extern "C" {
 #include <stdlib.h>
 #include <stdbool.h>
 
-#define MAX_RTP_PACKET_SIZE 2048
+#define MAX_RTP_PACKET_SIZE 4096
 
 // Function to initialize the RTP H26X module
-void rtp_h26x_init(int port);
+void rtp_h26x_init(const char *socket_path);
 
 // Function to deinitialize the RTP H26X module
 void rtp_h26x_deinit(void);
