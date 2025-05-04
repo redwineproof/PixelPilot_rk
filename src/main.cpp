@@ -492,6 +492,11 @@ uint8_t g_nalu[MAX_NALU_SIZE];
 #define MAX_FRAME_SIZE MAX_NALU_SIZE
 uint8_t g_frame[MAX_FRAME_SIZE];
 
+std::string rtp_forward_ip = "";
+uint16_t rtp_forward_port = 0;
+int udp_socket = -1;
+struct sockaddr_in forward_addr;
+
 void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 
 	uint8_t * buffer = (uint8_t *)malloc(MAX_RTP_PACKET_SIZE);
@@ -544,6 +549,11 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 				}
 				nalu_size = 0; // TODO: check if this is needed
 			}
+
+			// Forward the RTP packet if forwarding is enabled
+			if (udp_socket >= 0) {
+				sendto(udp_socket, buffer, size, MSG_DONTWAIT, (struct sockaddr*)&forward_addr, sizeof(forward_addr));
+			}
 		}
 	}
 
@@ -554,7 +564,27 @@ void read_stream(MppPacket *packet, int port, const VideoCodec& codec) {
 	timestamp_exit();
 }
 
+void setup_udp_forwarding() {
+    if (rtp_forward_ip.empty() || rtp_forward_port == 0) {
+        return; // No forwarding configured
+    }
 
+    udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket < 0) {
+        spdlog::error("Failed to create UDP socket: {}", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&forward_addr, 0, sizeof(forward_addr));
+    forward_addr.sin_family = AF_INET;
+    forward_addr.sin_port = htons(rtp_forward_port);
+    if (inet_pton(AF_INET, rtp_forward_ip.c_str(), &forward_addr.sin_addr) <= 0) {
+        spdlog::error("Invalid IP address for RTP forwarding: {}", rtp_forward_ip);
+        exit(EXIT_FAILURE);
+    }
+
+    spdlog::info("RTP forwarding enabled to {}:{}", rtp_forward_ip, rtp_forward_port);
+}
 
 uint64_t first_frame_ms=0;
 void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const VideoCodec& codec){
@@ -683,6 +713,8 @@ void printHelp() {
     "\n"
     "    --wfb-api-port         - Port of wfb-server for cli statistics. (Default: 8003)\n"
 	"                             Use \"0\" to disable this stats\n"
+	"    --rtp-forward <ip:port>  - Forward RTP stream to the specified IP and port\n"
+	"\n"
     "\n"
     "    --version              - Show program version\n"
     "\n", APP_VERSION_MAJOR, APP_VERSION_MINOR
@@ -853,6 +885,20 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	__OnArgument("--rtp-forward") {
+		char* forward = const_cast<char*>(__ArgValue);
+		char* ip = strtok(forward, ":");
+		char* port = strtok(NULL, ":");
+		if (ip && port) {
+			rtp_forward_ip = std::string(ip);
+			rtp_forward_port = atoi(port);
+		} else {
+			fprintf(stderr, "Invalid --rtp-forward argument. Use format <ip>:<port>\n");
+			return -1;
+		}
+		continue;
+	}
+
 	__EndParseConsoleArguments__
 
 	spdlog::set_level(log_level);
@@ -896,6 +942,9 @@ int main(int argc, char **argv)
 		return -2;
 	}
 	
+	////////////////////////////////// RTP FORWARD SETUP
+	setup_udp_forwarding();
+
 	////////////////////////////////// MPI SETUP
 	MppPacket packet;
 
