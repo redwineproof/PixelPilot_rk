@@ -414,6 +414,22 @@ void modeset_output_destroy(int fd, struct modeset_output *out)
 	free(out);
 }
 
+drmModeModeInfo custom_mode_1280_720_100 = {
+    .clock = 119100, // Pixel clock in kHz
+    .hdisplay = 1280,
+    .hsync_start = 1377,
+    .hsync_end = 1425,
+    .htotal = 1588,
+    .vdisplay = 720,
+    .vsync_start = 725,
+    .vsync_end = 730,
+    .vtotal = 750,
+    .vrefresh = 100,
+    .flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_PVSYNC,
+    .type = DRM_MODE_TYPE_DRIVER,
+    .name = "1280x720@100",
+};
+
 struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeConnector *conn, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh)
 {
 	int ret;
@@ -454,16 +470,28 @@ struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeCon
 				preferred_fc = i;
 			}
 		}
-		if (fc < 0  && preferred_fc < 0) {
-			fprintf(stderr, "couldn't find a matching mode for %dx%d@%d\n", mode_width , mode_height , mode_vrefresh);
-			goto out_error;
-		} else if (fc < 0  && preferred_fc >= 0) {
-			fprintf(stderr, "couldn't find a matching mode, useing preferred mode %dx%d@%d\n", conn->modes[preferred_fc].hdisplay, conn->modes[preferred_fc].vdisplay , conn->modes[preferred_fc].vrefresh);
-			fc = preferred_fc;
+
+		if (fc < 0) {
+			fprintf(stderr, "couldn't find a matching mode for %dx%d@%d\n", mode_width, mode_height, mode_vrefresh);
+		
+			// Ajouter le mode personnalisé si aucun mode correspondant n'est trouvé
+			if (mode_width == 1280 && mode_height == 720 && mode_vrefresh == 100) {
+				fprintf(stderr, "Adding custom mode 1280x720@100\n");
+				memcpy(&out->mode, &custom_mode_1280_720_100, sizeof(out->mode));
+			} else if (preferred_fc >= 0) {
+				fprintf(stderr, "couldn't find a matching mode, using preferred mode %dx%d@%d\n",
+						conn->modes[preferred_fc].hdisplay, conn->modes[preferred_fc].vdisplay, conn->modes[preferred_fc].vrefresh);
+				memcpy(&out->mode, &conn->modes[preferred_fc], sizeof(out->mode));
+			}
+			else {
+				goto out_error;
+			}
+		}else {
+			memcpy(&out->mode, &conn->modes[fc], sizeof(out->mode));
+			printf( "Using screen mode %dx%d@%d\n",conn->modes[fc].hdisplay, conn->modes[fc].vdisplay , conn->modes[fc].vrefresh );
 		}
-		printf( "Using screen mode %dx%d@%d\n",conn->modes[fc].hdisplay, conn->modes[fc].vdisplay , conn->modes[fc].vrefresh );
 	}
-	memcpy(&out->mode, &conn->modes[fc], sizeof(out->mode));
+
 	if (drmModeCreatePropertyBlob(fd, &out->mode, sizeof(out->mode), &out->mode_blob_id) != 0) {
 		fprintf(stderr, "couldn't create a blob property\n");
 		goto out_error;
